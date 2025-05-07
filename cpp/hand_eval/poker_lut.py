@@ -62,11 +62,22 @@ class PokerLUT:
                       fill_value=-2, dtype=np.int16)
         self.lib.get_hole_card_2_idx_lut(lut.ctypes.data_as(ctypes.POINTER(ctypes.c_int16)))
         return lut
+    def np_2d_arr_to_c(self,np_2d_arr):
+        # 确保数组是连续的内存布局
+        if not np_2d_arr.flags['C_CONTIGUOUS']:
+            np_2d_arr = np.ascontiguousarray(np_2d_arr)
+        # 直接返回 ctypes 指针
+        return np_2d_arr.ctypes.data_as(ctypes.POINTER(ctypes.c_int8))
 
     def get_idx_2_hole_card_lut(self):
         """获取从索引到底牌的查找表（1326x2）"""
         lut = np.full((self.RANGE_SIZE, 2), fill_value=-2, dtype=np.int8)
         self.lib.get_idx_2_hole_card_lut(lut.ctypes.data_as(ctypes.POINTER(ctypes.c_int8)))
+        return lut
+
+    def get_idx_2_hole_card_lut2(self):
+        lut = np.full(shape=(self.RANGE_SIZE, 2), fill_value=-2, dtype=np.int8)
+        self.lib.get_idx_2_hole_card_lut(self.np_2d_arr_to_c(lut))  # fills it
         return lut
 
     def get_idx_2_flop_lut(self):
@@ -171,7 +182,7 @@ class PokerLUT:
 if __name__ == "__main__":
     lut = PokerLUT()
 
-    print(lut.get_idx_2_hole_card_lut())
+    print(lut.get_idx_2_hole_card_lut2())
     # print(lut.get_hole_card_2_idx_lut())
     # print(lut.get_idx_2_flop_lut())
     # print(lut.get_idx_2_turn_lut())
