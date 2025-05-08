@@ -11,7 +11,7 @@ def np_2d_arr_to_c(np_2d_arr):
     if not np_2d_arr.flags['C_CONTIGUOUS']:
         np_2d_arr = np.ascontiguousarray(np_2d_arr)
     # 直接返回 ctypes 指针
-    return np_2d_arr.ctypes.data_as(ctypes.POINTER(ctypes.c_int))
+    return np_2d_arr.ctypes.data_as(ctypes.POINTER(ctypes.c_int8))
 
 def np_2d_arr_to_c_old(np_2d_arr):
         return (np_2d_arr.__array_interface__['data'][0]
@@ -19,18 +19,18 @@ def np_2d_arr_to_c_old(np_2d_arr):
 
 # 定义参数类型
 lib.get_hand_rank_holdem.argtypes = [
-    ctypes.POINTER(ctypes.c_int),  # hand_2d: int* (2*2)
-    ctypes.POINTER(ctypes.c_int)   # board_2d: int* (5*2)
+    ctypes.POINTER(ctypes.c_int8),  # hand_2d: int* (2*2)
+    ctypes.POINTER(ctypes.c_int8)   # board_2d: int* (5*2)
 ]
 lib.get_hand_rank_holdem.restype = ctypes.c_int
 
 # 也可以定义批量接口
 lib.get_hand_rank_all_hands_on_given_boards_holdem.argtypes = [
-    ctypes.POINTER(ctypes.c_int),  # int* hand_ranks
-    ctypes.POINTER(ctypes.c_int),  # int* boards_2d
+    ctypes.POINTER(ctypes.c_int8),  # int* hand_ranks
+    ctypes.POINTER(ctypes.c_int8),  # int* boards_2d
     ctypes.c_int,                 # int n_boards
-    ctypes.POINTER(ctypes.c_int),  # int* lut_hole_cards
-    ctypes.POINTER(ctypes.c_int)   # int* lut_1dcard_2d
+    ctypes.POINTER(ctypes.c_int8),  # int* lut_hole_cards
+    ctypes.POINTER(ctypes.c_int8)   # int* lut_1dcard_2d
 ]
 lib.get_hand_rank_all_hands_on_given_boards_holdem.restype = None
 
@@ -59,8 +59,8 @@ def rank_to_string(rank):
 
 # 构造手牌和公共牌
 # 例如: 手牌 [[12,0],[11,0]] (A♣, K♣), 公共牌 [[10,0],[9,0],[8,0],[0,1],[1,2]] (Q♣, J♣, 10♣, 2♦, 3♥)
-hand = np.array([[7, 0], [11, 0]], dtype=np.int32)
-board = np.array([[10, 0], [9, 0], [8, 0], [0, 1], [1, 2]], dtype=np.int32)
+hand = np.array([[1, 2], [5, 0]], dtype=np.int32)
+board = np.array([[8, 0], [12, 3], [10, 3], [3, 3], [2, 3]], dtype=np.int32)
 
 # 用函数简化调用
 rank = lib.get_hand_rank_holdem(np_2d_arr_to_c(hand), np_2d_arr_to_c(board))
@@ -68,8 +68,8 @@ print("手牌排名:", rank)
 print("牌型:", rank_to_string(rank))
 
 # 测试最强牌和最弱牌
-strongest_hand = np.array([[12, 0], [11, 0]], dtype=np.int32)  # A♣ K♣
-strongest_board = np.array([[10, 0], [9, 0], [8, 0], [7, 0], [6, 0]], dtype=np.int32)  # Q♣ J♣ 10♣ 9♣ 8♣
+strongest_hand = np.array([[1, 2], [10, 2]], dtype=np.int32)  # A♣ K♣
+strongest_board = np.array([[11, 2], [1, 0], [6, 0], [5, 2], [9, 0]], dtype=np.int32)  # Q♣ J♣ 10♣ 9♣ 8♣
 
 weakest_hand = np.array([[0, 0], [2, 1]], dtype=np.int32)  # 2♣ 4♦
 weakest_board = np.array([[3, 2], [5, 3], [7, 0], [11, 1], [12, 2]], dtype=np.int32)  # 5♥ 7♠ 9♣ K♦ A♥
