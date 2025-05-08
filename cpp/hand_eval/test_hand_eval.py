@@ -3,7 +3,15 @@ import numpy as np
 import os
 
 # 加载动态库
-lib = ctypes.CDLL(os.path.join(os.path.dirname(__file__), "lib_hand_eval.dylib"))
+print(os.name)
+if os.name == 'posix':
+    import platform
+    if platform.system() == 'Darwin':
+        lib = ctypes.CDLL(os.path.join(os.path.dirname(__file__), "lib_hand_eval.dylib"))
+    else:
+        lib = ctypes.CDLL(os.path.join(os.path.dirname(__file__), "lib_hand_eval.so"))
+else:
+    lib = ctypes.CDLL(os.path.join(os.path.dirname(__file__), "lib_hand_eval.dll"))
 
 # 定义参数类型
 lib.get_hand_rank_holdem.argtypes = [
