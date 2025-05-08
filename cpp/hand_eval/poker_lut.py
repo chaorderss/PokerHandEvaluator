@@ -192,3 +192,4 @@ if __name__ == "__main__":
     # print(lut.get_2d_card(12))
 
     # gcc -dynamiclib luts.c -o lib_luts.dylib
+    # gcc -shared -o lib_luts.so -fPIC luts.c

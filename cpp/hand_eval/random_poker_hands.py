@@ -125,7 +125,14 @@ def test_single_hand(lib, dtype=np.int32, use_int8_version=False):
 
 def main():
     # 加载库文件
-    lib_path = os.path.join(os.path.dirname(__file__), "lib_hand_eval.dylib")
+    if os.name == 'posix':
+        import platform
+        if platform.system() == 'Darwin':
+            lib_path = os.path.join(os.path.dirname(__file__), "lib_hand_eval.dylib")
+        else:
+            lib_path = os.path.join(os.path.dirname(__file__), "lib_hand_eval.so")
+    else:
+        lib_path = os.path.join(os.path.dirname(__file__), "lib_hand_eval.dll")
     if not os.path.exists(lib_path):
         print(f"找不到库文件: {lib_path}")
         return
@@ -133,18 +140,10 @@ def main():
     lib = ctypes.CDLL(lib_path)
 
     # 设置函数参数和返回值类型 - 标准函数
-    lib.get_hand_rank_holdem.argtypes = [ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_int)]
+    lib.get_hand_rank_holdem.argtypes = [ctypes.POINTER(ctypes.c_int8), ctypes.POINTER(ctypes.c_int8)]
     lib.get_hand_rank_holdem.restype = ctypes.c_int
 
-    # 设置函数参数和返回值类型 - int8_t版本
-    try:
-        lib.get_hand_rank_holdem_int8.argtypes = [ctypes.POINTER(ctypes.c_int8), ctypes.POINTER(ctypes.c_int8)]
-        lib.get_hand_rank_holdem_int8.restype = ctypes.c_int
-        has_int8_version = True
-        print("检测到int8_t版本函数，将优先使用它\n")
-    except AttributeError:
-        has_int8_version = False
-        print("未检测到int8_t版本函数，将使用标准版本\n")
+
 
     # 测试不同的数据类型和函数版本
     success = False
@@ -153,15 +152,11 @@ def main():
     test_configs = [
         # (数据类型, 是否使用int8版本)
         # (np.int32, False),  # 标准int版本 + np.int32
-        (np.int8, has_int8_version),  # int8_t版本 + np.int8 (如果有)
-        # (np.int32, has_int8_version),  # int8_t版本 + np.int32 (如果有)
-        # (np.int8, False)  # 尝试标准版本 + np.int8 (可能会失败)
+        (np.int8, False)  # 尝试标准版本 + np.int8 (可能会失败)
     ]
 
     for dtype, use_int8 in test_configs:
         # 如果配置要求int8版本但没有，则跳过
-        if use_int8 and not has_int8_version:
-            continue
 
         if test_single_hand(lib, dtype, use_int8):
             success = True
