@@ -122,42 +122,147 @@ def test_single_hand(lib, dtype=np.int32, use_int8_version=False):
     except Exception as e:
         print(f"测试失败: {e}\n")
         return False
+def np_2d_arr_to_c_eric(np_2d_arr):
+    return (np_2d_arr.__array_interface__['data'][0]
+            + np.arange(np_2d_arr.shape[0]) * np_2d_arr.strides[0]).astype(np.intp)
 
+def test_eric_version(lib_eric):
+    """测试Eric版本的库，使用np.intp格式参数"""
+    print("\n测试Eric版本库 (使用np.intp格式)")
+
+    # 生成随机测试牌
+    hand_np = generate_random_hand(dtype=np.int32)
+    board_np = generate_random_board(dtype=np.int32)
+
+
+    # 创建np.intp类型数组 (用于存储指向数据的指针)
+    hand_ptr = np_2d_arr_to_c_eric(hand_np)
+    board_ptr = np_2d_arr_to_c_eric(board_np)
+
+    print(f"底牌: {hand_to_string(hand_np)}")
+    print(f"公共牌: {hand_to_string(board_np)}")
+
+    try:
+        # 调用Eric版本的函数
+        rank = lib_eric.get_hand_rank_holdem(hand_ptr, board_ptr)
+        print(f"结果: {rank_to_string(rank)} (排名: {rank})")
+        print("测试成功！\n")
+        return True
+    except Exception as e:
+        print(f"测试失败: {e}\n")
+        return False
+def compare_libraries_performance(lib, lib_eric, num_hands=10000):
+    """比较两个库的性能"""
+    print(f"\n性能对比测试: 标准库 vs Eric库 (手牌数: {num_hands})")
+
+    # 为两个库准备数据
+    dtype = np.int8
+
+    # 生成随机手牌和牌桌
+    random_hands = []
+    for _ in range(num_hands):
+        hand, board = generate_random_hand_board_pair(dtype)
+        random_hands.append((hand, board))
+
+    # 测试标准库
+    print("测试标准库...")
+    start_time = time.time()
+    standard_ranks = []
+    for hand, board in random_hands:
+        rank = lib.get_hand_rank_holdem(np_2d_arr_to_c_int8(hand), np_2d_arr_to_c_int8(board))
+        standard_ranks.append(rank)
+    standard_time = time.time() - start_time
+
+    # 测试Eric库
+    print("测试Eric库...")
+    start_time = time.time()
+    eric_ranks = []
+    for hand, board in random_hands:
+        # 为Eric版本准备数据
+        hand_ptr = np_2d_arr_to_c_eric(hand)
+        board_ptr = np_2d_arr_to_c_eric(board)
+
+        rank = lib_eric.get_hand_rank_holdem(hand_ptr, board_ptr)
+        eric_ranks.append(rank)
+
+    eric_time = time.time() - start_time
+
+    # 验证结果一致性
+    results_match = all(s == e for s, e in zip(standard_ranks, eric_ranks))
+
+    # 打印性能比较
+    print("\n性能对比结果:")
+    print(f"标准库处理时间: {standard_time:.4f} 秒 (平均每手: {standard_time/num_hands*1000:.4f} 毫秒)")
+    print(f"Eric库处理时间: {eric_time:.4f} 秒 (平均每手: {eric_time/num_hands*1000:.4f} 毫秒)")
+    print(f"速度比较: 标准库是Eric库的 {eric_time/standard_time:.2f} 倍速度")
+    print(f"结果一致性检查: {'通过' if results_match else '失败'}")
+
+    return standard_time, eric_time, results_match
 def main():
-    # 加载库文件
+    # 加载标准库文件
     if os.name == 'posix':
         import platform
         if platform.system() == 'Darwin':
             lib_path = os.path.join(os.path.dirname(__file__), "lib_hand_eval.dylib")
+            lib_eric_path = os.path.join(os.path.dirname(__file__), "lib_hand_eval-eric.dylib")
         else:
             lib_path = os.path.join(os.path.dirname(__file__), "lib_hand_eval.so")
+            lib_eric_path = os.path.join(os.path.dirname(__file__), "lib_hand_eval-eric.so")
     else:
         lib_path = os.path.join(os.path.dirname(__file__), "lib_hand_eval.dll")
+        lib_eric_path = os.path.join(os.path.dirname(__file__), "lib_hand_eval-eric.dll")
+
     if not os.path.exists(lib_path):
         print(f"找不到库文件: {lib_path}")
         return
 
     lib = ctypes.CDLL(lib_path)
 
-    # 设置函数参数和返回值类型 - 标准函数
+    # 设置标准库的函数参数和返回值类型
     lib.get_hand_rank_holdem.argtypes = [ctypes.POINTER(ctypes.c_int8), ctypes.POINTER(ctypes.c_int8)]
     lib.get_hand_rank_holdem.restype = ctypes.c_int
 
+    # 尝试加载Eric版本的库
+    eric_test_success = False
+    if os.path.exists(lib_eric_path):
+        try:
+            lib_eric = ctypes.CDLL(lib_eric_path)
 
+            # 使用numpy的ndpointer设置参数类型
+            lib_eric.get_hand_rank_holdem.argtypes = [
+                np.ctypeslib.ndpointer(dtype=np.intp, ndim=1, flags='C'),
+                np.ctypeslib.ndpointer(dtype=np.intp, ndim=1, flags='C')
+            ]
+            lib_eric.get_hand_rank_holdem.restype = ctypes.c_int
 
-    # 测试不同的数据类型和函数版本
+            # 测试Eric版本
+            eric_test_success = test_eric_version(lib_eric)
+
+            # 如果两个库都可用，进行性能对比
+            if eric_test_success:
+                standard_time, eric_time, results_match = compare_libraries_performance(lib, lib_eric)
+
+                # 如果性能测试表明Eric版本更快，使用Eric版本进行后续测试
+                use_eric_version = eric_time < standard_time and results_match
+                if use_eric_version:
+                    print("\n由于Eric版本更快，将使用Eric版本进行后续测试")
+                else:
+                    print("\n将使用标准版本进行后续测试")
+
+        except Exception as e:
+            print(f"加载或测试Eric版本库时出错: {e}")
+    else:
+        print(f"找不到Eric版本库文件: {lib_eric_path}")
+
+    # 测试标准库版本...
     success = False
     best_config = None
 
     test_configs = [
-        # (数据类型, 是否使用int8版本)
-        # (np.int32, False),  # 标准int版本 + np.int32
-        (np.int8, False)  # 尝试标准版本 + np.int8 (可能会失败)
+        (np.int8, False)
     ]
 
     for dtype, use_int8 in test_configs:
-        # 如果配置要求int8版本但没有，则跳过
-
         if test_single_hand(lib, dtype, use_int8):
             success = True
             best_config = (dtype, use_int8)
@@ -168,24 +273,34 @@ def main():
         print("所有组合都失败了，请检查C库接口定义和编译选项")
         return
 
-    # 使用找到的成功组合生成1000手随机牌
+    # 使用找到的成功组合生成100000手随机牌
     dtype, use_int8 = best_config
     print(f"\n使用配置: dtype={dtype.__name__}, use_int8={use_int8}")
-    print("正在生成1000手随机牌并比较大小...")
+    print("正在生成100000手随机牌并比较大小...")
     num_hands = 100000
     hands = []
     start_time = time.time()
 
+    # 如果Eric版本可用且更快，则使用Eric版本
+    # print(locals())
+    use_eric = eric_test_success and 'use_eric_version' in locals() and use_eric_version
+    # use_eric = True
     for i in range(num_hands):
         hand, board = generate_random_hand_board_pair(dtype)
         try:
-            # 如果需要监控进度，可以每100手打印一次
-            if i % 100 == 0:
+            # 如果需要监控进度，可以每1000手打印一次
+            if i % 1000 == 0:
                 print(f"已处理 {i} 手...")
 
-            if use_int8:
-                rank = lib.get_hand_rank_holdem_int8(np_2d_arr_to_c_int8(hand), np_2d_arr_to_c_int8(board))
+            if use_eric:
+                # 为Eric版本准备数据
+                hand_ptr = np_2d_arr_to_c_eric(hand)
+                board_ptr = np_2d_arr_to_c_eric(board)
+
+
+                rank = lib_eric.get_hand_rank_holdem(hand_ptr, board_ptr)
             else:
+                # 使用标准版本
                 if dtype == np.int8:
                     rank = lib.get_hand_rank_holdem(np_2d_arr_to_c_int8(hand), np_2d_arr_to_c_int8(board))
                 else:
