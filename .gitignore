@@ -31,3 +31,5 @@
 # Editors
 *.swp
 .vscode
+build/
+.github/
