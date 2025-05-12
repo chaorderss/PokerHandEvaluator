@@ -7,7 +7,7 @@
 // int evaluate_7cards(int c1, int c2, int c3, int c4, int c5, int c6, int c7);
 
 uint16_t get_hand_rank_holdem(const uint8_t* hand_2d, const uint8_t* board_2d) {
-
+    uint8_t cards[7];
     // hand_2d: [2,2] 展开为 [h0_rank, h0_suit, h1_rank, h1_suit]
     for (uint8_t i = 0; i < 2; ++i)
         cards[i] = hand_2d[i*2] * 4 + hand_2d[i*2+1];

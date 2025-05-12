@@ -334,7 +334,7 @@ def np_2d_arr_to_c(np_2d_arr):
 if __name__ == "__main__":
     lut = PokerLUT()
 
-    # print(lut.get_n_boards_lut())
-    # print(lut.get_n_cards_out_at_lut())
-    # print(lut.get_n_cards_dealt_in_transition_to_lut())
+    print(lut.get_n_boards_lut())
+    print(lut.get_n_cards_out_at_lut())
+    print(lut.get_n_cards_dealt_in_transition_to_lut())
 
