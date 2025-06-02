@@ -58,6 +58,33 @@ extern "C" {
  * | A | 48| 49| 50| 51|
  *
  */
+
+/*
+ * Evaluate 2 cards - Texas Hold'em hole cards strength
+ * Returns ranking based on winning probability: 1 (strongest AA) to 169 (weakest 23o)
+ * This is based on pre-flop strength against random opponents in Texas Hold'em
+ */
+int evaluate_2cards(int a, int b);
+
+/*
+ * Evaluate 3 cards
+ * Returns ranking: 1 (strongest) to higher numbers (weaker)
+ * Possible hands: Three of a kind, One pair, High card
+ */
+int evaluate_3cards(int a, int b, int c);
+
+/*
+ * Evaluate 4 cards
+ * Returns ranking: 1 (strongest) to higher numbers (weaker)
+ * Possible hands: Four of a kind, Three of a kind, Two pair, One pair, High card
+ */
+int evaluate_4cards(int a, int b, int c, int d);
+
+/*
+ * Get descriptive text for 2-card hand (e.g., "AA", "AKs", "72o")
+ */
+const char* get_2card_description(int a, int b);
+
 int evaluate_5cards(int a, int b, int c, int d, int e);
 int evaluate_6cards(int a, int b, int c, int d, int e, int f);
 int evaluate_7cards(int a, int b, int c, int d, int e, int f, int g);
@@ -101,6 +128,12 @@ int evaluate_plo6_cards(int c1, int c2, int c3, int c4, int c5, int h1, int h2,
 #include <phevaluator/rank.h>
 
 namespace phevaluator {
+
+Rank EvaluateCards(const Card& a, const Card& b);
+
+Rank EvaluateCards(const Card& a, const Card& b, const Card& c);
+
+Rank EvaluateCards(const Card& a, const Card& b, const Card& c, const Card& d);
 
 Rank EvaluateCards(const Card& a, const Card& b, const Card& c, const Card& d,
                    const Card& e);
