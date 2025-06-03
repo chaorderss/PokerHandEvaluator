@@ -35,6 +35,7 @@ add_library(pheval STATIC
   src/hashtable7.c
   src/rank.c
   src/7462.c
+  src/evaluator_extended.c
 )
 target_include_directories(pheval PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>

@@ -145,50 +145,201 @@ int evaluate_3cards(int a, int b, int c) {
 /*
  * Pre-calculated 2-card hand strength rankings based on winning probability
  * against random hands in Texas Hold'em
- * Matrix[high_rank][low_rank] where high_rank >= low_rank
- * For pairs: matrix[rank][rank], for non-pairs: matrix[high][low]
- * Values represent suited hands, add offset for offsuit
+ *
+ * ACCURATE RANKINGS based on statistical data (1=strongest, 169=weakest):
+ * Based on the provided 169-hand ranking table with exact win percentages
+ *
+ * Direct lookup table approach for accuracy
  */
-static const int two_card_rankings[13][13] = {
-    //2    3    4    5    6    7    8    9    T    J    Q    K    A
-    {169, 31,  45,  75,  95,  110, 124, 138, 149, 157, 163, 167, 2},  // 2 (row 0)
-    {32,  168, 46,  60,  79,  96,  111, 125, 139, 150, 158, 164, 33}, // 3 (row 1)
-    {47,  47,  167, 61,  76,  92,  107, 122, 136, 148, 156, 162, 34}, // 4 (row 2)
-    {62,  61,  61,  166, 77,  91,  106, 121, 135, 147, 155, 161, 35}, // 5 (row 3)
-    {78,  80,  77,  77,  165, 93,  108, 123, 137, 148, 154, 160, 36}, // 6 (row 4)
-    {94,  97,  93,  92,  93,  164, 109, 124, 138, 149, 153, 159, 37}, // 7 (row 5)
-    {110, 112, 108, 107, 109, 109, 163, 124, 137, 148, 152, 158, 38}, // 8 (row 6)
-    {125, 126, 123, 122, 124, 125, 125, 162, 138, 149, 151, 157, 39}, // 9 (row 7)
-    {139, 140, 137, 136, 138, 139, 138, 139, 161, 149, 150, 156, 40}, // T (row 8)
-    {150, 151, 149, 148, 149, 150, 149, 150, 150, 160, 152, 159, 41}, // J (row 9)
-    {158, 159, 157, 156, 155, 154, 153, 152, 151, 153, 159, 165, 42}, // Q (row 10)
-    {164, 165, 163, 162, 161, 160, 159, 158, 157, 160, 166, 158, 28}, // K (row 11)
-    {168, 164, 158, 150, 139, 125, 110, 94,  78,  62,  47,  32,  1}   // A (row 12)
+
+// Hand ranking lookup table - maps card combination to rank (1-169)
+typedef struct {
+    int high_rank;  // 0-12 (2-A)
+    int low_rank;   // 0-12 (2-A)
+    int suited;     // 1=suited, 0=offsuit
+    int rank;       // 1-169 ranking
+} hand_rank_entry;
+
+static const hand_rank_entry hand_rankings[] = {
+    // Pairs (high_rank == low_rank, suited ignored)
+    {12, 12, 0, 1},   // AA
+    {11, 11, 0, 2},   // KK
+    {10, 10, 0, 3},   // QQ
+    {9, 9, 0, 5},     // JJ
+    {8, 8, 0, 10},    // TT
+    {7, 7, 0, 17},    // 99
+    {6, 6, 0, 21},    // 88
+    {5, 5, 0, 29},    // 77
+    {4, 4, 0, 36},    // 66
+    {3, 3, 0, 46},    // 55
+    {2, 2, 0, 50},    // 44
+    {0, 0, 0, 51},    // 22
+    {1, 1, 0, 52},    // 33
+
+    // Suited hands (high_rank > low_rank, suited=1)
+    {12, 11, 1, 4},   // AKs
+    {12, 10, 1, 6},   // AQs
+    {11, 10, 1, 7},   // KQs
+    {12, 9, 1, 8},    // AJs
+    {11, 9, 1, 9},    // KJs
+    {12, 8, 1, 12},   // ATs
+    {10, 9, 1, 13},   // QJs
+    {11, 8, 1, 14},   // KTs
+    {10, 8, 1, 15},   // QTs
+    {9, 8, 1, 16},    // JTs
+    {12, 7, 1, 19},   // A9s
+    {11, 7, 1, 22},   // K9s
+    {8, 7, 1, 23},    // T9s
+    {12, 6, 1, 24},   // A8s
+    {10, 7, 1, 25},   // Q9s
+    {9, 7, 1, 26},    // J9s
+    {12, 3, 1, 28},   // A5s
+    {12, 5, 1, 30},   // A7s
+    {11, 6, 1, 37},   // K8s
+    {8, 6, 1, 38},    // T8s
+    {12, 0, 1, 39},   // A2s
+    {7, 6, 1, 40},    // 98s
+    {9, 6, 1, 41},    // J8s
+    {10, 6, 1, 43},   // Q8s
+    {11, 5, 1, 44},   // K7s
+    {6, 5, 1, 48},    // 87s
+    {11, 4, 1, 53},   // K6s
+    {7, 5, 1, 54},    // 97s
+    {11, 3, 1, 55},   // K5s
+    {5, 4, 1, 56},    // 76s
+    {8, 5, 1, 57},    // T7s
+    {11, 2, 1, 58},   // K4s
+    {11, 1, 1, 59},   // K3s
+    {11, 0, 1, 60},   // K2s
+    {10, 5, 1, 61},   // Q7s
+    {6, 4, 1, 62},    // 86s
+    {4, 3, 1, 63},    // 65s
+    {9, 5, 1, 64},    // J7s
+    {3, 2, 1, 65},    // 54s
+    {10, 4, 1, 66},   // Q6s
+    {5, 3, 1, 67},    // 75s
+    {7, 4, 1, 68},    // 96s
+    {10, 3, 1, 69},   // Q5s
+    {4, 2, 1, 70},    // 64s
+    {10, 2, 1, 71},   // Q4s
+    {10, 1, 1, 72},   // Q3s
+    {8, 4, 1, 74},    // T6s
+    {10, 0, 1, 75},   // Q2s
+    {3, 1, 1, 77},    // 53s
+    {6, 3, 1, 78},    // 85s
+    {9, 4, 1, 79},    // J6s
+    {9, 3, 1, 82},    // J5s
+    {2, 1, 1, 84},    // 43s
+    {5, 2, 1, 85},    // 74s
+    {9, 2, 1, 86},    // J4s
+    {9, 1, 1, 87},    // J3s
+    {7, 3, 1, 88},    // 95s
+    {9, 0, 1, 89},    // J2s
+    {4, 1, 1, 90},    // 63s
+    {3, 0, 1, 92},    // 52s
+    {8, 3, 1, 93},    // T5s
+    {6, 2, 1, 94},    // 84s
+    {8, 2, 1, 95},    // T4s
+    {8, 1, 1, 96},    // T3s
+    {2, 0, 1, 97},    // 42s
+    {8, 0, 1, 98},    // T2s
+    {5, 1, 1, 103},   // 73s
+    {1, 0, 1, 105},   // 32s
+    {7, 2, 1, 106},   // 94s
+    {7, 1, 1, 107},   // 93s
+    {4, 0, 1, 110},   // 62s
+    {7, 0, 1, 111},   // 92s
+    {6, 1, 1, 116},   // 83s
+    {6, 0, 1, 118},   // 82s
+    {5, 0, 1, 120},   // 72s
+
+    // Offsuit hands (high_rank > low_rank, suited=0)
+    {12, 11, 0, 11},  // AKo
+    {12, 10, 0, 18},  // AQo
+    {11, 10, 0, 20},  // KQo
+    {12, 9, 0, 27},   // AJo
+    {11, 9, 0, 31},   // KJo
+    {10, 9, 0, 35},   // QJo
+    {12, 8, 0, 42},   // ATo
+    {11, 8, 0, 45},   // KTo
+    {9, 8, 0, 47},    // JTo
+    {10, 8, 0, 49},   // QTo
+    {8, 7, 0, 73},    // T9o
+    {12, 7, 0, 76},   // A9o
+    {9, 7, 0, 80},    // J9o
+    {11, 7, 0, 81},   // K9o
+    {10, 7, 0, 83},   // Q9o
+    {12, 6, 0, 91},   // A8o
+    {7, 6, 0, 99},    // 98o
+    {8, 6, 0, 100},   // T8o
+    {12, 3, 0, 101},  // A5o
+    {12, 5, 0, 102},  // A7o
+    {12, 2, 0, 104},  // A4o
+    {9, 6, 0, 108},   // J8o
+    {12, 1, 0, 109},  // A3o
+    {11, 6, 0, 112},  // K8o
+    {12, 4, 0, 113},  // A6o
+    {6, 5, 0, 114},   // 87o
+    {10, 6, 0, 115},  // Q8o
+    {12, 0, 0, 117},  // A2o
+    {7, 5, 0, 119},   // 97o
+    {5, 4, 0, 121},   // 76o
+    {11, 5, 0, 122},  // K7o
+    {4, 3, 0, 123},   // 65o
+    {8, 5, 0, 124},   // T7o
+    {11, 4, 0, 125},  // K6o
+    {6, 4, 0, 126},   // 86o
+    {3, 2, 0, 127},   // 54o
+    {11, 3, 0, 128},  // K5o
+    {9, 5, 0, 129},   // J7o
+    {5, 3, 0, 130},   // 75o
+    {10, 5, 0, 131},  // Q7o
+    {11, 2, 0, 132},  // K4o
+    {11, 1, 0, 133},  // K3o
+    {7, 4, 0, 134},   // 96o
+    {11, 0, 0, 135},  // K2o
+    {4, 2, 0, 136},   // 64o
+    {10, 4, 0, 137},  // Q6o
+    {3, 1, 0, 138},   // 53o
+    {6, 3, 0, 139},   // 85o
+    {8, 4, 0, 140},   // T6o
+    {10, 3, 0, 141},  // Q5o
+    {2, 1, 0, 142},   // 43o
+    {10, 2, 0, 143},  // Q4o
+    {10, 1, 0, 144},  // Q3o
+    {5, 2, 0, 145},   // 74o
+    {10, 0, 0, 146},  // Q2o
+    {9, 4, 0, 147},   // J6o
+    {4, 1, 0, 148},   // 63o
+    {9, 3, 0, 149},   // J5o
+    {7, 3, 0, 150},   // 95o
+    {3, 0, 0, 151},   // 52o
+    {9, 2, 0, 152},   // J4o
+    {9, 1, 0, 153},   // J3o
+    {2, 0, 0, 154},   // 42o
+    {9, 0, 0, 155},   // J2o
+    {6, 2, 0, 156},   // 84o
+    {8, 3, 0, 157},   // T5o
+    {8, 2, 0, 158},   // T4o
+    {1, 0, 0, 159},   // 32o
+    {8, 1, 0, 160},   // T3o
+    {5, 1, 0, 161},   // 73o
+    {8, 0, 0, 162},   // T2o
+    {4, 0, 0, 163},   // 62o
+    {7, 2, 0, 164},   // 94o
+    {7, 1, 0, 165},   // 93o
+    {7, 0, 0, 166},   // 92o
+    {6, 1, 0, 167},   // 83o
+    {6, 0, 0, 168},   // 82o
+    {5, 0, 0, 169},   // 72o
 };
 
-/*
- * Offsuit penalty - add this to suited ranking for offsuit hands
- */
-static const int offsuit_penalty[13][13] = {
-    //2  3  4  5  6  7  8  9  T  J  Q  K  A
-    {0,  1, 2, 3, 4, 5, 6, 7, 8, 9, 10,11,0}, // 2
-    {1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10,1}, // 3
-    {2, 1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 2}, // 4
-    {3, 2, 1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 3}, // 5
-    {4, 3, 2, 1, 0, 1, 2, 3, 4, 5, 6, 7, 4}, // 6
-    {5, 4, 3, 2, 1, 0, 1, 2, 3, 4, 5, 6, 5}, // 7
-    {6, 5, 4, 3, 2, 1, 0, 1, 2, 3, 4, 5, 6}, // 8
-    {7, 6, 5, 4, 3, 2, 1, 0, 1, 2, 3, 4, 7}, // 9
-    {8, 7, 6, 5, 4, 3, 2, 1, 0, 1, 2, 3, 8}, // T
-    {9, 8, 7, 6, 5, 4, 3, 2, 1, 0, 1, 2, 9}, // J
-    {10,9, 8, 7, 6, 5, 4, 3, 2, 1, 0, 1,10}, // Q
-    {11,10,9, 8, 7, 6, 5, 4, 3, 2, 1, 0,11}, // K
-    {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10,11,0}  // A
-};
+// Number of entries in hand_rankings table
+static const int num_hand_rankings = sizeof(hand_rankings) / sizeof(hand_rank_entry);
 
 /*
  * Evaluate 2 cards (hole cards in Texas Hold'em)
- * Returns ranking based on winning probability: 1 (strongest AA) to 169 (weakest 23o)
+ * Returns ranking based on winning probability: 1 (strongest AA) to 169 (weakest 72o)
  * Higher rank number = weaker hand
  */
 int evaluate_2cards(int a, int b) {
@@ -204,15 +355,17 @@ int evaluate_2cards(int a, int b) {
     // Check if suited
     int is_suited = (suit_a == suit_b) ? 1 : 0;
 
-    // Get base ranking (suited)
-    int base_rank = two_card_rankings[high_rank][low_rank];
-
-    // Add penalty if offsuit
-    if (!is_suited && high_rank != low_rank) {
-        base_rank += offsuit_penalty[high_rank][low_rank];
+    // Search through the hand rankings table
+    for (int i = 0; i < num_hand_rankings; i++) {
+        if (hand_rankings[i].high_rank == high_rank &&
+            hand_rankings[i].low_rank == low_rank &&
+            (high_rank == low_rank || hand_rankings[i].suited == is_suited)) {
+            return hand_rankings[i].rank;
+        }
     }
 
-    return base_rank;
+    // Fallback - should never reach here with valid input
+    return 169;
 }
 
 /*
