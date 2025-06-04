@@ -10,7 +10,9 @@ libpheval.a: src/evaluator5.c.o src/hashtable5.c.o src/evaluator5.cc.o \
              src/evaluator6.c.o src/hashtable6.c.o src/evaluator6.cc.o \
              src/evaluator7.c.o src/hashtable7.c.o src/evaluator7.cc.o \
              src/hash.c.o src/hashtable.c.o src/dptables.c.o \
-             src/rank.c.o src/7462.c.o src/tables_bitwise.c.o
+             src/rank.c.o src/7462.c.o src/tables_bitwise.c.o \
+             src/evaluator_holdem_potential.c.o \
+             src/evaluator_extended.c.o
 	ar rcs $@ $^
 
 libphevalplo4.a: src/dptables.c.o src/tables_plo4.c.o \
