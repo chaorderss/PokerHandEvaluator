@@ -57,6 +57,13 @@ int calculate_straight_potential(int* cards, int card_count);
 int calculate_set_potential(int h1, int h2, int* cards, int card_count);
 int calculate_overcards_potential(int h1, int h2, int* cards, int card_count);
 
+// Declarations for helper functions made non-static in .c file
+// These are needed if generate_potential_tables.c calls them directly or indirectly
+// when linked with evaluator_holdem_potential.o
+double get_card_draw_probability(int outs, int known_cards_count);
+int countSetBits(unsigned int n);
+int get_straight_outs_count(unsigned int hand_board_rank_mask, int current_card_count);
+
 /*
  * Convenience functions for different stages
  */

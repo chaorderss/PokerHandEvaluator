@@ -36,6 +36,7 @@ add_library(pheval STATIC
   src/rank.c
   src/7462.c
   src/evaluator_extended.c
+  src/evaluator_holdem_potential.c
 )
 target_include_directories(pheval PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -44,7 +45,8 @@ target_compile_options(pheval PUBLIC -O3)
 set(PUB_HEADERS include/phevaluator/phevaluator.h
                 include/phevaluator/card.h
                 include/phevaluator/card_sampler.h
-                include/phevaluator/rank.h)
+                include/phevaluator/rank.h
+                include/phevaluator/evaluator_holdem_potential.h)
 set_target_properties(pheval PROPERTIES
     VERSION ${PROJECT_VERSION}
     PUBLIC_HEADER "${PUB_HEADERS}")

@@ -38,6 +38,7 @@ cd build
 cmake ..
 make pheval
 ```
+cd ../PokerHandEvaluator/cpp && gcc -o generate_tables_exe src/generate_potential_tables.c src/evaluator_holdem_potential.c src/evaluator5.c src/evaluator7.c src/dptables.c src/tables_bitwise.c src/hashtable5.c src/hashtable7.c src/hashtable.c src/hash.c -Iinclude -lm
 
 ### Build in Windows
 

@@ -8,6 +8,9 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+// #include <math.h>
+#include "../include/phevaluator/phevaluator.h"
+#include "../include/phevaluator/evaluator_holdem_potential.h" // Ensure this is included to get declarations
 
 // Constants (must match evaluator_holdem_potential.c)
 #define FLUSH_DRAW_WEIGHT 200
@@ -70,14 +73,15 @@ int main(int argc, char** argv) {
 }
 
 void generate_flush_potential_lut(FILE* fp) {
-    printf("Generating flush potential lookup table...\n");
+    printf("Generating flush potential lookup table (using new probability logic)...\n");
 
     fprintf(fp, "// Flush potential lookup table: [suit_pattern] -> potential_value\n");
     fprintf(fp, "// suit_pattern encodes the count of each suit as a 16-bit value: 4 bits per suit\n");
     fprintf(fp, "static const int flush_potential_lut[65536] = {\n");
 
+    int dummy_cards[7]; // Max 7 cards
+
     for (int pattern = 0; pattern < 65536; pattern++) {
-        // Extract suit counts from pattern (4 bits each)
         int suits[4] = {
             (pattern >> 0) & 0xF,
             (pattern >> 4) & 0xF,
@@ -85,19 +89,28 @@ void generate_flush_potential_lut(FILE* fp) {
             (pattern >> 12) & 0xF
         };
 
-        int total_cards = suits[0] + suits[1] + suits[2] + suits[3];
-        int potential = 0;
+        int card_count = 0;
+        for(int s_idx=0; s_idx<4; ++s_idx) card_count += suits[s_idx];
 
-        if (total_cards >= 2 && total_cards <= 7) {
-            // Calculate flush potential
-            for (int suit = 0; suit < 4; suit++) {
-                if (suits[suit] == 4 && total_cards < 7) {
-                    potential = FLUSH_DRAW_WEIGHT; // 4-card flush draw
-                    break;
-                } else if (suits[suit] == 3 && total_cards <= 5) {
-                    potential = FLUSH_DRAW_WEIGHT / 2; // 3-card flush draw
+        int current_dummy_idx = 0;
+        if (card_count > 0 && card_count <= 7) {
+            for (int s_idx = 0; s_idx < 4; ++s_idx) {
+                for (int c = 0; c < suits[s_idx]; ++c) {
+                    if (current_dummy_idx < card_count) {
+                        // Assign a unique rank for each card to avoid issues with other potential calcs if they were used
+                        // For flush potential, only suit matters. Rank is (current_dummy_idx << 2)
+                        dummy_cards[current_dummy_idx] = (current_dummy_idx << 2) | s_idx;
+                        current_dummy_idx++;
+                    }
                 }
             }
+        } else if (card_count > 7) { // Invalid pattern, more than 7 cards specified by suit counts
+             card_count = 0; // Treat as no potential
+        }
+
+        int potential = 0;
+        if (card_count >= 2 && card_count <= 7) { // Need at least 2 cards for any potential
+             potential = calculate_flush_potential(dummy_cards, card_count);
         }
 
         fprintf(fp, "%d", potential);
@@ -109,42 +122,27 @@ void generate_flush_potential_lut(FILE* fp) {
 }
 
 void generate_straight_potential_lut(FILE* fp) {
-    printf("Generating straight potential lookup table...\n");
+    printf("Generating straight potential lookup table (using new probability logic, assuming flop stage)...\n");
 
     fprintf(fp, "// Straight potential lookup table: [rank_pattern] -> potential_value\n");
     fprintf(fp, "// rank_pattern encodes which ranks are present as a 13-bit mask\n");
+    fprintf(fp, "// Assumes card_count = 5 (flop) for probability calculations.\n");
     fprintf(fp, "static const int straight_potential_lut[8192] = {\n");
 
-    for (int pattern = 0; pattern < 8192; pattern++) {
-        // Count consecutive ranks and gaps
-        int max_consecutive = 0;
-        int current_consecutive = 0;
-        int gaps = 0;
+    int assumed_card_count_for_lut = 5; // For flop stage
 
-        for (int rank = 0; rank < 13; rank++) {
-            if (pattern & (1 << rank)) {
-                current_consecutive++;
-            } else {
-                if (current_consecutive > 0) {
-                    gaps++;
-                    if (gaps <= 2) { // Allow up to 2 gaps for potential straights
-                        current_consecutive++;
-                    } else {
-                        max_consecutive = (current_consecutive > max_consecutive) ? current_consecutive : max_consecutive;
-                        current_consecutive = 0;
-                        gaps = 0;
-                    }
-                }
-            }
-        }
-        max_consecutive = (current_consecutive > max_consecutive) ? current_consecutive : max_consecutive;
-
-        // Calculate potential
+    for (int pattern = 0; pattern < 8192; pattern++) { // pattern is the rank_mask
         int potential = 0;
-        if (max_consecutive >= 4) {
-            potential = STRAIGHT_DRAW_WEIGHT;
-        } else if (max_consecutive >= 3) {
-            potential = STRAIGHT_DRAW_WEIGHT / 2;
+        int num_total_outs = get_straight_outs_count(pattern, assumed_card_count_for_lut);
+
+        if (num_total_outs > 0) {
+            double probability = get_card_draw_probability(num_total_outs, assumed_card_count_for_lut);
+
+            if (num_total_outs == 8) {
+                potential = (int)(probability * STRAIGHT_DRAW_WEIGHT);
+            } else {
+                potential = (int)(probability * STRAIGHT_DRAW_WEIGHT * (double)num_total_outs / 8.0);
+            }
         }
 
         fprintf(fp, "%d", potential);
