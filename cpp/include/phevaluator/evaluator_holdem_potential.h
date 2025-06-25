@@ -6,56 +6,47 @@
 
 #include <stdio.h>
 
-#ifndef PHEVALUATOR_EVALUATOR_HOLDEM_POTENTIAL_H
-#define PHEVALUATOR_EVALUATOR_HOLDEM_POTENTIAL_H
+#ifndef PHEVALUATOR_HOLDEM_POTENTIAL_H
+#define PHEVALUATOR_HOLDEM_POTENTIAL_H
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-/*
- * =================================================================
- *                 PUBLIC API of the Evaluator
- * =================================================================
- * These are the only functions intended for external use. All other
- * functions are internal implementation details.
+/**
+ * @brief Evaluates a Texas Hold'em hand with future potential.
+ *
+ * This is the primary public function. It takes an array of cards and
+ * calculates the hand's value. On the flop and turn, it computes the
+ * mathematically expected final rank. Otherwise, it returns the current
+ * hand strength.
+ *
+ * @param cards An array of integer card representations.
+ * @param card_count The number of cards in the array.
+ * @return The final evaluated hand rank (lower is better).
  */
+int evaluate_holdem_with_potential(int* cards, int card_count);
 
-/*
- * Main evaluation function with potential consideration (COMPILE-TIME OPTIMIZED VERSION)
- * Parameters:
- * - h1, h2: hole cards (player's 2 cards)
- * - c1, c2, c3, c4, c5: community cards (5 cards, some may be -1 if not dealt yet)
- * Note: stage is automatically determined by counting valid community cards
- * Returns: Lower numbers indicate stronger hands
- * VERSION 3.0: Uses compile-time generated lookup tables - zero initialization overhead!
- */
-int evaluate_holdem_with_potential(int h1, int h2, int c1, int c2, int c3, int c4, int c5);
-
-/*
- * Alternative evaluation function using original (slower) methods
- * Kept for compatibility and performance comparison
- */
-int evaluate_holdem_with_potential_original(int h1, int h2, int c1, int c2, int c3, int c4, int c5);
-
-/*
- * Convenience functions for different stages
+/**
+ * @brief Deprecated function for evaluating flop hands.
+ * Use evaluate_holdem_with_potential(cards, 5) instead.
  */
 int evaluate_holdem_flop_with_potential(int h1, int h2, int c1, int c2, int c3);
-int evaluate_holdem_turn_with_potential(int h1, int h2, int c1, int c2, int c3, int c4);
-int evaluate_holdem_river_with_potential(int h1, int h2, int c1, int c2, int c3, int c4, int c5);
 
-/*
- * =================================================================
- *       DEPRECATED LUT INITIALIZATION (No longer needed)
- * =================================================================
- * Kept for backward compatibility. These are now no-ops as the
- * tables are compile-time generated.
+/**
+ * @brief Deprecated function for evaluating turn hands.
+ * Use evaluate_holdem_with_potential(cards, 6) instead.
  */
-void init_all_potential_luts(void);
+int evaluate_holdem_turn_with_potential(int h1, int h2, int c1, int c2, int c3, int c4);
+
+/**
+ * @brief Deprecated function for evaluating river hands.
+ * Use evaluate_holdem_with_potential(cards, 7) instead.
+ */
+int evaluate_holdem_river_with_potential(int h1, int h2, int c1, int c2, int c3, int c4, int c5);
 
 #ifdef __cplusplus
 }
 #endif
 
-#endif // PHEVALUATOR_EVALUATOR_HOLDEM_POTENTIAL_H
+#endif // PHEVALUATOR_HOLDEM_POTENTIAL_H
