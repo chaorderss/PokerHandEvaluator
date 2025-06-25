@@ -19,6 +19,14 @@ extern int evaluate_5cards(int a, int b, int c, int d, int e);
 extern int evaluate_6cards(int a, int b, int c, int d, int e, int f);
 extern int evaluate_7cards(int a, int b, int c, int d, int e, int f, int g);
 
+// Forward declarations for all helper functions
+int calculate_flush_potential(int* cards, int card_count, int current_rank);
+int calculate_straight_potential(int* cards, int card_count, int current_rank);
+int calculate_set_potential(int h1, int h2, int* cards, int card_count);
+int calculate_overcards_potential(int h1, int h2, int* cards, int card_count);
+int calculate_full_house_potential(int* cards, int card_count, int current_rank);
+int calculate_four_of_kind_potential(int* cards, int card_count, int current_rank);
+
 // Weights for different types of potential
 #define FLUSH_DRAW_WEIGHT 500    // 同花听牌权重
 #define STRAIGHT_DRAW_WEIGHT 300 // 顺子听牌权重
@@ -138,7 +146,7 @@ int evaluate_holdem_with_potential(int h1, int h2, int c1, int c2, int c3, int c
         }
     }
 
-    // --- MAJOR CHANGE: Use direct calculation instead of LUTs for accuracy ---
+    // === STRATIFIED POTENTIAL CALCULATION BASED ON HAND STRENGTH ===
     // Calculate potential bonuses based on remaining cards to be dealt
     int remaining_cards = 7 - card_count;
 
@@ -153,21 +161,62 @@ int evaluate_holdem_with_potential(int h1, int h2, int c1, int c2, int c3, int c
         int base_potential = 0;
         int pot_f = 0, pot_s = 0, pot_set = 0, pot_oc = 0;
 
-        // --- NEW LOGIC: Only calculate set/overcard potential for non-made hands ---
-        // 1609 is the rank for A-5 straight. Anything better is a strong made hand.
-        if (current_strength > 1609) {
-            // Not a made hand yet, calculate all potentials
+        // === STRATIFIED POTENTIAL CALCULATION ===
+        // Based on hand strength thresholds:
+        // 高牌: 6186, 一对: 3326, 两对: 2468, 三条: 1610, 顺子: 1600, 同花: 323, 葫芦: 167, 四条: 11, 皇家同花顺: 1
+
+        if (current_strength > 3326) {
+            // 高牌 (High Card): 计算所有潜力（一对、两对、三条、顺子、同花）
             pot_f = calculate_flush_potential(available_cards, card_count, current_strength);
             pot_s = calculate_straight_potential(available_cards, card_count, current_strength);
             pot_set = calculate_set_potential(h1, h2, available_cards, card_count);
             pot_oc = calculate_overcards_potential(h1, h2, available_cards, card_count);
-        } else {
-            // This is already a strong hand (Straight or better).
-            // Only calculate potential for further improvement (e.g., straight to flush).
-            // Do NOT calculate overcard/set potential for hands that are already strong.
+            if (is_royal_flush_case) printf("    层级: 高牌 - 计算所有潜力\n");
+        } else if (current_strength > 2468) {
+            // 一对 (One Pair): 计算变成两对、三条、顺子、同花的潜力
             pot_f = calculate_flush_potential(available_cards, card_count, current_strength);
             pot_s = calculate_straight_potential(available_cards, card_count, current_strength);
-            // pot_set and pot_oc remain 0
+            pot_set = calculate_set_potential(h1, h2, available_cards, card_count);
+            // pot_oc = 0; // 不计算高牌潜力，已经有一对
+            if (is_royal_flush_case) printf("    层级: 一对 - 计算两对/三条/顺子/同花潜力\n");
+        } else if (current_strength > 1610) {
+            // 两对 (Two Pair): 计算变成葫芦、顺子、同花的潜力
+            pot_f = calculate_flush_potential(available_cards, card_count, current_strength);
+            pot_s = calculate_straight_potential(available_cards, card_count, current_strength);
+            pot_set = calculate_full_house_potential(available_cards, card_count, current_strength);
+            // pot_oc = 0; // 不计算高牌潜力
+            if (is_royal_flush_case) printf("    层级: 两对 - 计算葫芦/顺子/同花潜力\n");
+        } else if (current_strength > 1600) {
+            // 三条 (Three of a Kind): 计算变成葫芦、四条、同花的潜力
+            pot_f = calculate_flush_potential(available_cards, card_count, current_strength);
+            pot_s = calculate_four_of_kind_potential(available_cards, card_count, current_strength);
+            pot_set = calculate_full_house_potential(available_cards, card_count, current_strength);
+            // pot_oc = 0; // 不计算高牌潜力
+            if (is_royal_flush_case) printf("    层级: 三条 - 计算葫芦/四条/同花潜力\n");
+        } else if (current_strength > 323) {
+            // 顺子 (Straight): 只计算变成同花顺的潜力
+            pot_f = calculate_flush_potential(available_cards, card_count, current_strength);
+            // pot_s = 0; // 已经有顺子
+            // pot_set = 0; // 不相关
+            // pot_oc = 0; // 不相关
+            if (is_royal_flush_case) printf("    层级: 顺子 - 只计算同花顺潜力\n");
+        } else if (current_strength > 167) {
+            // 同花 (Flush): 计算变成同花顺的潜力
+            pot_s = calculate_straight_potential(available_cards, card_count, current_strength);
+            // pot_f = 0; // 已经有同花
+            // pot_set = 0; // 不相关
+            // pot_oc = 0; // 不相关
+            if (is_royal_flush_case) printf("    层级: 同花 - 只计算同花顺潜力\n");
+        } else if (current_strength > 11) {
+            // 葫芦 (Full House): 计算变成四条的潜力
+            pot_s = calculate_four_of_kind_potential(available_cards, card_count, current_strength);
+            // pot_f = 0; // 已经有葫芦，只关心四条
+            // pot_set = 0; // 不相关
+            // pot_oc = 0; // 不相关
+            if (is_royal_flush_case) printf("    层级: 葫芦 - 计算四条潜力\n");
+        } else {
+            // 四条或更强 (Four of a Kind or better): 不计算潜力
+            if (is_royal_flush_case) printf("    层级: 四条或更强 - 不计算潜力\n");
         }
 
         if (is_royal_flush_case) {
@@ -232,11 +281,7 @@ double get_card_draw_probability(int outs, int known_cards_count) {
 
 // =============== ORIGINAL FUNCTIONS (KEPT FOR COMPATIBILITY AND TESTING) ===============
 
-// Forward declarations for helper functions
-int calculate_flush_potential(int* cards, int card_count, int current_rank);
-int calculate_straight_potential(int* cards, int card_count, int current_rank);
-int calculate_set_potential(int h1, int h2, int* cards, int card_count);
-int calculate_overcards_potential(int h1, int h2, int* cards, int card_count);
+// Helper functions are declared at the top of the file
 
 /*
  * Alternative function that uses original (slower) calculation methods
@@ -540,6 +585,129 @@ int calculate_overcards_potential(int h1, int h2, int* cards, int card_count) {
     }
 
     return overcard_count * OVERCARDS_WEIGHT;
+}
+
+/*
+ * Calculate full house potential (葫芦潜力) - specifically for two pair to full house
+ * Used when current hand is two pair and we want to see potential for full house
+ */
+int calculate_full_house_potential(int* cards, int card_count, int current_rank) {
+    if (card_count >= 7) return 0;
+
+    // Count rank frequencies to identify two pair
+    int rank_counts[13] = {0};
+    int is_card_in_hand[52] = {0};
+    for (int i = 0; i < card_count; i++) {
+        rank_counts[cards[i] >> 2]++;
+        is_card_in_hand[cards[i]] = 1;
+    }
+
+    // Find pairs
+    int pair_ranks[2] = {-1, -1};
+    int pair_count = 0;
+    for (int r = 0; r < 13; r++) {
+        if (rank_counts[r] == 2 && pair_count < 2) {
+            pair_ranks[pair_count++] = r;
+        }
+    }
+
+    // Must have exactly two pair to calculate full house potential
+    if (pair_count < 2) return 0;
+
+    long long sum_of_improvements = 0;
+    int improving_out_count = 0;
+    int temp_hand[7];
+    for(int i=0; i<card_count; ++i) temp_hand[i] = cards[i];
+
+    // Check outs for each pair rank (the remaining 2 cards of each rank)
+    for (int p = 0; p < 2; p++) {
+        int rank = pair_ranks[p];
+        for (int s = 0; s < 4; s++) {
+            int out_card = (rank << 2) | s;
+            if (!is_card_in_hand[out_card]) {
+                temp_hand[card_count] = out_card;
+                int rank = 0;
+                if (card_count == 5) { // Flop -> evaluate 6 cards
+                    rank = evaluate_6cards(temp_hand[0], temp_hand[1], temp_hand[2], temp_hand[3], temp_hand[4], temp_hand[5]);
+                } else if (card_count == 6) { // Turn -> evaluate 7 cards
+                    rank = evaluate_7cards(temp_hand[0], temp_hand[1], temp_hand[2], temp_hand[3], temp_hand[4], temp_hand[5], temp_hand[6]);
+                }
+
+                // Only count improving hands
+                if (rank < current_rank) {
+                    sum_of_improvements += (current_rank - rank);
+                    improving_out_count++;
+                }
+            }
+        }
+    }
+
+    if (improving_out_count == 0) return 0;
+
+    double avg_improvement = (double)sum_of_improvements / improving_out_count;
+    double probability = get_card_draw_probability(improving_out_count, card_count);
+
+    return (int)(avg_improvement * probability);
+}
+
+/*
+ * Calculate four of a kind potential (四条潜力) - specifically for three of a kind to four of a kind
+ * Used when current hand is three of a kind and we want to see potential for four of a kind
+ */
+int calculate_four_of_kind_potential(int* cards, int card_count, int current_rank) {
+    if (card_count >= 7) return 0;
+
+    // Count rank frequencies to identify three of a kind
+    int rank_counts[13] = {0};
+    int is_card_in_hand[52] = {0};
+    for (int i = 0; i < card_count; i++) {
+        rank_counts[cards[i] >> 2]++;
+        is_card_in_hand[cards[i]] = 1;
+    }
+
+    // Find the three of a kind rank
+    int trip_rank = -1;
+    for (int r = 0; r < 13; r++) {
+        if (rank_counts[r] == 3) {
+            trip_rank = r;
+            break;
+        }
+    }
+
+    // Must have exactly three of a kind to calculate four of a kind potential
+    if (trip_rank == -1) return 0;
+
+    // There should be exactly 1 out (the remaining card of the trip rank)
+    int out_count = 0;
+    int temp_hand[7];
+    for(int i=0; i<card_count; ++i) temp_hand[i] = cards[i];
+
+    for (int s = 0; s < 4; s++) {
+        int out_card = (trip_rank << 2) | s;
+        if (!is_card_in_hand[out_card]) {
+            temp_hand[card_count] = out_card;
+            int rank = 0;
+            if (card_count == 5) { // Flop -> evaluate 6 cards
+                rank = evaluate_6cards(temp_hand[0], temp_hand[1], temp_hand[2], temp_hand[3], temp_hand[4], temp_hand[5]);
+            } else if (card_count == 6) { // Turn -> evaluate 7 cards
+                rank = evaluate_7cards(temp_hand[0], temp_hand[1], temp_hand[2], temp_hand[3], temp_hand[4], temp_hand[5], temp_hand[6]);
+            }
+
+            // Only count improving hands
+            if (rank < current_rank) {
+                out_count++;
+                break; // Only need to check one out for quads
+            }
+        }
+    }
+
+    if (out_count == 0) return 0;
+
+    // Four of a kind is a very strong improvement, assign high value
+    double probability = get_card_draw_probability(1, card_count); // Only 1 out
+    int improvement = current_rank - 11; // Approximate four of a kind rank
+
+    return (int)(improvement * probability);
 }
 
 /*
