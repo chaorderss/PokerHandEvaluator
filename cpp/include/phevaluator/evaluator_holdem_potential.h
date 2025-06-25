@@ -23,27 +23,27 @@ extern "C" {
  *
  * @param cards An array of integer card representations.
  * @param card_count The number of cards in the array.
- * @return The final evaluated hand rank (lower is better).
+ * @return The final evaluated hand strength (0-1,000,000, higher is better).
  */
-int evaluate_holdem_with_potential(int* cards, int card_count);
+long long evaluate_holdem_with_potential(int* cards, int card_count);
 
 /**
  * @brief Deprecated function for evaluating flop hands.
  * Use evaluate_holdem_with_potential(cards, 5) instead.
  */
-int evaluate_holdem_flop_with_potential(int h1, int h2, int c1, int c2, int c3);
+long long evaluate_holdem_flop_with_potential(int h1, int h2, int c1, int c2, int c3);
 
 /**
  * @brief Deprecated function for evaluating turn hands.
  * Use evaluate_holdem_with_potential(cards, 6) instead.
  */
-int evaluate_holdem_turn_with_potential(int h1, int h2, int c1, int c2, int c3, int c4);
+long long evaluate_holdem_turn_with_potential(int h1, int h2, int c1, int c2, int c3, int c4);
 
 /**
  * @brief Deprecated function for evaluating river hands.
  * Use evaluate_holdem_with_potential(cards, 7) instead.
  */
-int evaluate_holdem_river_with_potential(int h1, int h2, int c1, int c2, int c3, int c4, int c5);
+long long evaluate_holdem_river_with_potential(int h1, int h2, int c1, int c2, int c3, int c4, int c5);
 
 #ifdef __cplusplus
 }
