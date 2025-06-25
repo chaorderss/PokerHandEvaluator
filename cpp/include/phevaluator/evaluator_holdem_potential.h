@@ -6,12 +6,20 @@
 
 #include <stdio.h>
 
-#ifndef EVALUATOR_HOLDEM_POTENTIAL_H
-#define EVALUATOR_HOLDEM_POTENTIAL_H
+#ifndef PHEVALUATOR_EVALUATOR_HOLDEM_POTENTIAL_H
+#define PHEVALUATOR_EVALUATOR_HOLDEM_POTENTIAL_H
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+/*
+ * =================================================================
+ *                 PUBLIC API of the Evaluator
+ * =================================================================
+ * These are the only functions intended for external use. All other
+ * functions are internal implementation details.
+ */
 
 /*
  * Main evaluation function with potential consideration (COMPILE-TIME OPTIMIZED VERSION)
@@ -31,42 +39,23 @@ int evaluate_holdem_with_potential(int h1, int h2, int c1, int c2, int c3, int c
 int evaluate_holdem_with_potential_original(int h1, int h2, int c1, int c2, int c3, int c4, int c5);
 
 /*
- * DEPRECATED: Lookup table initialization functions
- * These functions are now no-ops as lookup tables are compile-time generated
- * Kept for backward compatibility only - will print info messages when called
- */
-void init_flush_potential_lut(void);
-void init_straight_potential_lut(void);
-void init_set_potential_lut(void);
-void init_overcards_lut(void);
-void init_all_potential_luts(void);
-
-/*
- * Fast lookup table versions of potential calculation functions
- * Now use compile-time generated tables - no initialization required!
- */
-int calculate_flush_potential_fast(int* cards, int card_count);
-int calculate_straight_potential_fast(int* cards, int card_count);
-int calculate_set_potential_fast(int h1, int h2, int* cards, int card_count);
-int calculate_overcards_potential_fast(int h1, int h2, int* cards, int card_count);
-
-// =============== DEPRECATED / LEGACY (Do not use directly) ===============
-// These are older calculation functions, kept for reference inside the _original evaluator.
-// They are NOT used by the main evaluate_holdem_with_potential function.
-int calculate_flush_potential(int* cards, int card_count, int current_rank);
-int calculate_straight_potential(int* cards, int card_count, int current_rank);
-int calculate_set_potential(int h1, int h2, int* cards, int card_count);
-int calculate_overcards_potential(int h1, int h2, int* cards, int card_count);
-
-/*
  * Convenience functions for different stages
  */
 int evaluate_holdem_flop_with_potential(int h1, int h2, int c1, int c2, int c3);
 int evaluate_holdem_turn_with_potential(int h1, int h2, int c1, int c2, int c3, int c4);
 int evaluate_holdem_river_with_potential(int h1, int h2, int c1, int c2, int c3, int c4, int c5);
 
+/*
+ * =================================================================
+ *       DEPRECATED LUT INITIALIZATION (No longer needed)
+ * =================================================================
+ * Kept for backward compatibility. These are now no-ops as the
+ * tables are compile-time generated.
+ */
+void init_all_potential_luts(void);
+
 #ifdef __cplusplus
 }
 #endif
 
-#endif // EVALUATOR_HOLDEM_POTENTIAL_H
+#endif // PHEVALUATOR_EVALUATOR_HOLDEM_POTENTIAL_H
