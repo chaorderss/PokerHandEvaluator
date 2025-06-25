@@ -13,10 +13,12 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdbool.h>
+#include <math.h>
+#include <stdlib.h>
 
 #include "tables.h"
-#include "../include/phevaluator/strength_lut.h"
 #include "../include/phevaluator/evaluator_holdem_potential.h"
+#include "../include/phevaluator/phevaluator.h"
 
 // Helper functions for debugging
 static const char* debug_ranks[] = {"2", "3", "4", "5", "6", "7", "8", "9", "T", "J", "Q", "K", "A"};
@@ -42,7 +44,9 @@ static void print_hand(int* cards, int count) {
 #define FLOP 1
 #define TURN 2
 #define RIVER 3
-#define UNKNOWN_STAGE 4
+#define UNKNOWN_STAGE -1
+
+#define STRENGTH_EXPONENT 4.0
 
 // Extern function declarations from other .c files to ensure visibility
 extern int evaluate_5cards(int a, int b, int c, int d, int e);
@@ -52,6 +56,13 @@ extern int evaluate_7cards(int a, int b, int c, int d, int e, int f, int g);
 // Forward declaration for the unified evaluation wrapper
 int evaluate_hand_from_cards_2_to_7(int* cards, int card_count);
 
+// Forward declaration
+static int get_hand_strength(int* cards, int card_count);
+
+typedef struct {
+    int outs[52];
+    int count;
+} OutCards;
 
 /*
 ================================================================================
@@ -67,18 +78,31 @@ static int get_stage(int card_count) {
     return UNKNOWN_STAGE;
 }
 
-static long long calculate_one_street_expected_strength(int* cards, int card_count) {
-    int deck[52];
-    int hand[7];
-    int remaining_deck[52 - card_count];
-    long long total_strength = 0;
-    int remaining_cards_count = 0;
+// Finds cards that improve the hand rank
+static OutCards find_improvement_outs(int* base_hand, int base_hand_count, int* deck, int deck_count) {
+    OutCards result = {{0}, 0};
+    int current_strength = get_hand_strength(base_hand, base_hand_count);
+    int temp_hand[8];
+    memcpy(temp_hand, base_hand, base_hand_count * sizeof(int));
 
-    memcpy(hand, cards, card_count * sizeof(int));
+    for (int i = 0; i < deck_count; i++) {
+        temp_hand[base_hand_count] = deck[i];
+        int new_strength = get_hand_strength(temp_hand, base_hand_count + 1);
+        if (new_strength > current_strength) { // Higher strength is better
+            result.outs[result.count++] = deck[i];
+        }
+    }
+    return result;
+}
+
+static long long calculate_one_street_strength(int* cards, int card_count) {
+    int deck[52];
+    int remaining_deck[52 - card_count];
+    int remaining_cards_count = 0;
 
     for (int i = 0; i < 52; i++) deck[i] = i;
     for (int i = 0; i < card_count; i++) {
-        deck[cards[i]] = -1;
+        if(cards[i] >= 0 && cards[i] < 52) deck[cards[i]] = -1;
     }
     for (int i = 0; i < 52; i++) {
         if (deck[i] != -1) {
@@ -87,93 +111,75 @@ static long long calculate_one_street_expected_strength(int* cards, int card_cou
     }
 
     if (remaining_cards_count == 0) {
-        return evaluate_hand_from_cards_2_to_7(hand, card_count);
+        return get_hand_strength(cards, card_count);
+    }
+
+    OutCards outs = find_improvement_outs(cards, card_count, remaining_deck, remaining_cards_count);
+
+    double e_hit = 0;
+    double e_miss = 0;
+    int hit_count = outs.count;
+    int miss_count = 0;
+
+    int temp_hand[8];
+    memcpy(temp_hand, cards, card_count * sizeof(int));
+
+    bool is_out[52] = {false};
+    for(int i = 0; i < hit_count; i++) {
+        is_out[outs.outs[i]] = true;
     }
 
     for (int i = 0; i < remaining_cards_count; i++) {
-        hand[card_count] = remaining_deck[i];
-        total_strength += evaluate_hand_from_cards_2_to_7(hand, card_count + 1);
+        temp_hand[card_count] = remaining_deck[i];
+        long long final_strength = get_hand_strength(temp_hand, card_count + 1);
+        if (is_out[remaining_deck[i]]) {
+            e_hit += final_strength;
+        } else {
+            e_miss += final_strength;
+            miss_count++;
+        }
     }
 
-    return total_strength / remaining_cards_count;
+    if (hit_count > 0) e_hit /= hit_count;
+    if (miss_count > 0) e_miss /= miss_count;
+
+    double p_hit = (double)hit_count / remaining_cards_count;
+    double p_miss = 1.0 - p_hit;
+
+    return (long long)(e_hit * p_hit + e_miss * p_miss);
 }
 
-static long long calculate_two_street_expected_strength(int* cards) {
+static long long calculate_two_street_strength(int* cards) {
     int deck[52];
     int turn_hand[6];
     int remaining_deck[47];
-    long long total_expected_strength = 0;
     int remaining_cards_count = 0;
-
-    // Debugging for a specific hand: Ts 9s 8s 7s 3d
-    // Encoded values: {32, 28, 24, 20, 6}
-    int debug_hand[] = {32, 28, 24, 20, 6};
-    int match_count = 0;
-    for (int i = 0; i < 5; i++) {
-        for (int j = 0; j < 5; j++) {
-            if (cards[i] == debug_hand[j]) {
-                match_count++;
-                break;
-            }
-        }
-    }
-    bool is_debug_hand = (match_count == 5);
-
-    if (is_debug_hand) {
-        printf("\n--- DEBUG: calculate_two_street_expected_strength for combo draw ---\n");
-        printf("Initial 5 cards (Flop): ");
-        print_hand(cards, 5);
-        printf("\n");
-        printf("Current 5-card strength: %lld\n", calculate_one_street_expected_strength(cards, 5));
-    }
+    double total_expected_strength = 0;
 
     memcpy(turn_hand, cards, 5 * sizeof(int));
 
     for (int i = 0; i < 52; i++) deck[i] = i;
     for (int i = 0; i < 5; i++) {
-        deck[cards[i]] = -1;
+        if(cards[i] >= 0 && cards[i] < 52) deck[cards[i]] = -1;
     }
+
     for (int i = 0; i < 52; i++) {
         if (deck[i] != -1) {
             remaining_deck[remaining_cards_count++] = deck[i];
         }
     }
 
-    if (remaining_cards_count != 47) {
-        // This case should not be reached in a standard game.
-        // Fallback to evaluating the current 5 cards.
-        return calculate_one_street_expected_strength(cards, 5);
+    if (remaining_cards_count < 2) {
+        return get_hand_strength(cards, 5);
     }
 
     for (int i = 0; i < remaining_cards_count; i++) {
-        turn_hand[5] = remaining_deck[i];
-        long long one_street_strength = calculate_one_street_expected_strength(turn_hand, 6);
-        total_expected_strength += one_street_strength;
-
-        if (is_debug_hand) {
-            // Print for interesting turn cards
-            int turn_card = remaining_deck[i];
-            // As (completes flush): rank 12, suit 0 -> 48
-            // Jc (completes straight): rank 9, suit 3 -> 39
-            // 6c (completes straight): rank 4, suit 3 -> 19
-            // 2d (blank): rank 0, suit 2 -> 2
-            if (turn_card == 48 || turn_card == 39 || turn_card == 19 || turn_card == 2) {
-                printf("  Turn card: ");
-                print_card(turn_card);
-                printf(" -> one_street_expected_strength: %-5lld (Current 6-card strength: %lld)\n", one_street_strength, calculate_one_street_expected_strength(turn_hand, 6));
-            }
-        }
+        turn_hand[5] = remaining_deck[i]; // Turn card
+        total_expected_strength += calculate_one_street_strength(turn_hand, 6);
     }
 
-    if (is_debug_hand) {
-        long long final_avg_strength = total_expected_strength / remaining_cards_count;
-        printf("Final avg strength for combo draw: %lld\n", final_avg_strength);
-        printf("--- END DEBUG ---\n");
-    }
-
-    return total_expected_strength / remaining_cards_count;
+    return (long long)(total_expected_strength / remaining_cards_count);
 }
-
 
 /*
 ================================================================================
@@ -198,14 +204,14 @@ long long evaluate_holdem_with_potential(int* cards, int card_count) {
 
     switch (stage) {
         case PREFLOP:
-            return evaluate_hand_from_cards_2_to_7(cards, card_count);
+            return 0;
         case FLOP:
-            return calculate_two_street_expected_strength(cards);
+            return calculate_two_street_strength(cards);
         case TURN:
-            return calculate_one_street_expected_strength(cards, card_count);
+            return calculate_one_street_strength(cards, card_count);
         case RIVER:
         default:
-            return evaluate_hand_from_cards_2_to_7(cards, card_count);
+            return get_hand_strength(cards, card_count);
     }
 }
 
@@ -218,33 +224,8 @@ long long evaluate_holdem_with_potential(int* cards, int card_count) {
  */
 int evaluate_hand_from_cards_2_to_7(int* cards, int card_count)
 {
-    int rank;
-    switch (card_count) {
-        case 5:
-            rank = evaluate_5cards(
-                cards[0], cards[1], cards[2], cards[3], cards[4]);
-            break;
-        case 6:
-            rank = evaluate_6cards(
-                cards[0], cards[1], cards[2], cards[3], cards[4], cards[5]);
-            break;
-        case 7:
-            rank = evaluate_7cards(
-                cards[0], cards[1], cards[2], cards[3], cards[4], cards[5], cards[6]);
-            break;
-        default:
-            // For preflop or invalid card counts, we can't determine a 7-card equivalent strength.
-            // Returning a mid-range value is a possible heuristic.
-            // 500000 might represent an average hand.
-            return 500000;
-    }
-
-    if (rank > 0 && rank <= 7462) {
-        // Return strength from LUT (higher is better)
-        return hand_strength_lut[rank];
-    }
-
-    return 500000; // Fallback for any unexpected rank
+    // This function is now just a wrapper for get_hand_strength
+    return get_hand_strength(cards, card_count);
 }
 
 /*
@@ -277,5 +258,25 @@ long long evaluate_holdem_turn_with_potential(int h1, int h2, int c1, int c2, in
  */
 long long evaluate_holdem_river_with_potential(int h1, int h2, int c1, int c2, int c3, int c4, int c5) {
     int cards[] = {h1, h2, c1, c2, c3, c4, c5};
-    return evaluate_holdem_with_potential(cards, 7);
+    return get_hand_strength(cards, 7);
+}
+
+static int get_hand_strength(int* cards, int card_count)
+{
+    int rank;
+    switch (card_count) {
+        case 5:
+            rank = evaluate_5cards(cards[0], cards[1], cards[2], cards[3], cards[4]);
+            break;
+        case 6:
+            rank = evaluate_6cards(cards[0], cards[1], cards[2], cards[3], cards[4], cards[5]);
+            break;
+        case 7:
+            rank = evaluate_7cards(cards[0], cards[1], cards[2], cards[3], cards[4], cards[5], cards[6]);
+            break;
+        default:
+            rank = -1; // Invalid card count
+            break;
+    }
+    return rank;
 }
