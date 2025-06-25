@@ -859,8 +859,8 @@ static int calculate_two_street_potential(
     double prob_hit_on_turn = (double)improving_out_count / (52.0 - 5.0);
     double turn_potential = avg_improvement_on_turn * prob_hit_on_turn;
 
-    // --- 2. Calculate River Potential (if we miss on turn) ---
-    long long river_sum_of_improvements = 0;
+    // --- 2. Calculate River Potential (using the CORRECT baseline: current_rank) ---
+    long long sum_of_final_ranks_on_hit = 0;
     int blank_sim_count = 0;
 
     int is_card_in_hand_on_flop[52] = {0};
@@ -874,12 +874,7 @@ static int calculate_two_street_potential(
             for(int i=0; i<5; ++i) temp_hand_on_turn[i] = cards[i];
             temp_hand_on_turn[5] = blank_turn_card_idx;
 
-            int rank_on_turn = evaluate_6cards(
-                temp_hand_on_turn[0], temp_hand_on_turn[1], temp_hand_on_turn[2],
-                temp_hand_on_turn[3], temp_hand_on_turn[4], temp_hand_on_turn[5]
-            );
-
-            // Now, calculate improvement if we hit an out on the river
+            // Now, calculate final rank if we hit an out on the river
             for (int out_card_idx = 0; out_card_idx < 52; out_card_idx++) {
                 if (out_cards_lookup[out_card_idx]) {
                      int final_rank = evaluate_7cards(
@@ -887,9 +882,7 @@ static int calculate_two_street_potential(
                         temp_hand_on_turn[3], temp_hand_on_turn[4], temp_hand_on_turn[5],
                         out_card_idx
                      );
-                     if (final_rank < rank_on_turn) {
-                         river_sum_of_improvements += (rank_on_turn - final_rank);
-                     }
+                     sum_of_final_ranks_on_hit += final_rank;
                 }
             }
             blank_sim_count++;
@@ -897,9 +890,16 @@ static int calculate_two_street_potential(
     }
 
     double river_potential = 0;
-    if (blank_sim_count > 0) {
-        // Average improvement over all blank turns and all outs
-        double avg_improvement_on_river = (double)river_sum_of_improvements / (blank_sim_count * improving_out_count);
+    if (blank_sim_count > 0 && improving_out_count > 0) {
+        // This is the average rank of a 7-card hand if we miss the turn and hit the river.
+        double avg_final_rank_on_hit = (double)sum_of_final_ranks_on_hit / (blank_sim_count * improving_out_count);
+
+        // THE CRITICAL FIX: The improvement is measured against the original 5-card hand's rank.
+        double avg_improvement_on_river = current_rank - avg_final_rank_on_hit;
+
+        if (avg_improvement_on_river < 0) {
+            avg_improvement_on_river = 0; // Potential cannot be negative
+        }
 
         // Probability of missing on turn AND hitting on river
         double prob_miss_turn_and_hit_river =
