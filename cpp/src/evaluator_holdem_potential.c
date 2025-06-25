@@ -26,12 +26,28 @@ int calculate_set_potential(int h1, int h2, int* cards, int card_count);
 int calculate_overcards_potential(int h1, int h2, int* cards, int card_count);
 int calculate_full_house_potential(int* cards, int card_count, int current_rank);
 int calculate_four_of_kind_potential(int* cards, int card_count, int current_rank);
+static double get_avg_7_card_rank_from_6_cards(int c1, int c2, int c3, int c4, int c5, int c6);
+
+// Forward declaration for the new two-street potential calculation function
+static int calculate_two_street_potential(
+    int* cards,
+    int card_count,
+    int current_rank,
+    long long sum_of_improvements_turn,
+    int improving_out_count,
+    int* out_cards_lookup
+);
 
 // Weights for different types of potential
 #define FLUSH_DRAW_WEIGHT 500    // 同花听牌权重
 #define STRAIGHT_DRAW_WEIGHT 300 // 顺子听牌权重
 #define SET_POTENTIAL_WEIGHT 20 // 对子改进权重
 #define OVERCARDS_WEIGHT 10      // 高牌权重
+#define STRAIGHT_FLUSH_WEIGHT 100 // 同花顺听牌权重
+
+// Heuristic multiplier to boost the value of potential on the flop,
+// compensating for the underestimation of not considering the river card's impact.
+// #define FLOP_POTENTIAL_BOOST 2.0 // This is now replaced by a more accurate simulation
 
 // =============== COMPILE-TIME LOOKUP TABLE SYSTEM ===============
 // All lookup tables are now statically defined in evaluator_holdem_potential_tables.h
@@ -360,6 +376,7 @@ int calculate_flush_potential(int* cards, int card_count, int current_rank) {
 
     long long sum_of_improvements = 0;
     int improving_out_count = 0;
+    int is_out_card[52] = {0};
     int temp_hand[7];
     for(int i=0; i<card_count; ++i) temp_hand[i] = cards[i];
 
@@ -367,6 +384,7 @@ int calculate_flush_potential(int* cards, int card_count, int current_rank) {
     for (int r = 0; r < 13; r++) {
         int out_card = (r << 2) | flush_draw_suit;
         if (!is_card_in_hand[out_card]) {
+            is_out_card[out_card] = 1; // Mark this card as an out
             temp_hand[card_count] = out_card;
             int rank = 0;
             // Evaluate based on the next stage
@@ -390,7 +408,15 @@ int calculate_flush_potential(int* cards, int card_count, int current_rank) {
     // Probability is now based on hitting one of the IMPROVING outs
     double probability = get_card_draw_probability(improving_out_count, card_count);
 
-    return (int)(avg_improvement * probability);
+    if (card_count == 5) {
+        // Use the new, accurate two-street potential calculation model
+        return calculate_two_street_potential(cards, card_count, current_rank, sum_of_improvements, improving_out_count, is_out_card);
+    } else {
+        // On the turn, the old one-street calculation is correct
+        double avg_improvement = (double)sum_of_improvements / improving_out_count;
+        double probability = get_card_draw_probability(improving_out_count, card_count);
+        return (int)(avg_improvement * probability);
+    }
 }
 
 // Helper function to count set bits in an integer
@@ -401,6 +427,42 @@ int countSetBits(unsigned int n) {
         count++;
     }
     return count;
+}
+
+/**
+ * @brief Calculates the average 7-card hand rank given 6 cards.
+ *
+ * This function simulates dealing every possible 7th card from the deck
+ * and returns the average rank of all possible 7-card hands.
+ *
+ * @param c1..c6 The six cards.
+ * @return The average hand rank as a double.
+ */
+static double get_avg_7_card_rank_from_6_cards(int c1, int c2, int c3, int c4, int c5, int c6) {
+    int is_card_in_hand[52] = {0};
+    is_card_in_hand[c1] = 1;
+    is_card_in_hand[c2] = 1;
+    is_card_in_hand[c3] = 1;
+    is_card_in_hand[c4] = 1;
+    is_card_in_hand[c5] = 1;
+    is_card_in_hand[c6] = 1;
+
+    long long total_rank = 0;
+    int river_sim_count = 0;
+
+    for (int i = 0; i < 52; i++) {
+        if (!is_card_in_hand[i]) {
+            total_rank += evaluate_7cards(c1, c2, c3, c4, c5, c6, i);
+            river_sim_count++;
+        }
+    }
+
+    if (river_sim_count > 0) {
+        return (double)total_rank / river_sim_count;
+    }
+
+    // Fallback, should not be reached in a normal game
+    return evaluate_6cards(c1, c2, c3, c4, c5, c6);
 }
 
 // Helper function to count straight outs
@@ -521,10 +583,19 @@ int calculate_straight_potential(int* cards, int card_count, int current_rank) {
 
     if (improving_out_count == 0) return 0;
 
-    double avg_improvement = (double)sum_of_improvements / improving_out_count;
-    double probability = get_card_draw_probability(improving_out_count, card_count);
-
-    return (int)(avg_improvement * probability);
+    if (card_count == 5) {
+        // Use the new, accurate two-street potential calculation model
+        int is_out_card_lookup[52] = {0};
+        for(int i=0; i<improving_out_count; ++i) {
+            is_out_card_lookup[out_cards[i]] = 1;
+        }
+        return calculate_two_street_potential(cards, card_count, current_rank, sum_of_improvements, improving_out_count, is_out_card_lookup);
+    } else {
+        // On the turn, the old one-street calculation is correct
+        double avg_improvement = (double)sum_of_improvements / improving_out_count;
+        double probability = get_card_draw_probability(improving_out_count, card_count);
+        return (int)(avg_improvement * probability);
+    }
 }
 
 /*
@@ -616,15 +687,17 @@ int calculate_full_house_potential(int* cards, int card_count, int current_rank)
 
     long long sum_of_improvements = 0;
     int improving_out_count = 0;
+    int is_out_card[52] = {0};
     int temp_hand[7];
     for(int i=0; i<card_count; ++i) temp_hand[i] = cards[i];
 
     // Check outs for each pair rank (the remaining 2 cards of each rank)
     for (int p = 0; p < 2; p++) {
-        int rank = pair_ranks[p];
+        int rank_idx = pair_ranks[p];
         for (int s = 0; s < 4; s++) {
-            int out_card = (rank << 2) | s;
+            int out_card = (rank_idx << 2) | s;
             if (!is_card_in_hand[out_card]) {
+                is_out_card[out_card] = 1; // Mark as out
                 temp_hand[card_count] = out_card;
                 int rank = 0;
                 if (card_count == 5) { // Flop -> evaluate 6 cards
@@ -647,7 +720,13 @@ int calculate_full_house_potential(int* cards, int card_count, int current_rank)
     double avg_improvement = (double)sum_of_improvements / improving_out_count;
     double probability = get_card_draw_probability(improving_out_count, card_count);
 
-    return (int)(avg_improvement * probability);
+    if (card_count == 5) {
+        return calculate_two_street_potential(cards, card_count, current_rank, sum_of_improvements, improving_out_count, is_out_card);
+    } else {
+        double avg_improvement = (double)sum_of_improvements / improving_out_count;
+        double probability = get_card_draw_probability(improving_out_count, card_count);
+        return (int)(avg_improvement * probability);
+    }
 }
 
 /*
@@ -678,13 +757,17 @@ int calculate_four_of_kind_potential(int* cards, int card_count, int current_ran
     if (trip_rank == -1) return 0;
 
     // There should be exactly 1 out (the remaining card of the trip rank)
-    int out_count = 0;
+    // We calculate its average improvement to a full house or four of a kind
+    long long sum_of_improvements = 0;
+    int improving_out_count = 0;
+    int is_out_card[52] = {0};
     int temp_hand[7];
     for(int i=0; i<card_count; ++i) temp_hand[i] = cards[i];
 
     for (int s = 0; s < 4; s++) {
         int out_card = (trip_rank << 2) | s;
         if (!is_card_in_hand[out_card]) {
+            is_out_card[out_card] = 1; // Mark as out
             temp_hand[card_count] = out_card;
             int rank = 0;
             if (card_count == 5) { // Flop -> evaluate 6 cards
@@ -695,19 +778,21 @@ int calculate_four_of_kind_potential(int* cards, int card_count, int current_ran
 
             // Only count improving hands
             if (rank < current_rank) {
-                out_count++;
-                break; // Only need to check one out for quads
+                sum_of_improvements += (current_rank - rank);
+                improving_out_count++;
             }
         }
     }
 
-    if (out_count == 0) return 0;
+    if (improving_out_count == 0) return 0;
 
-    // Four of a kind is a very strong improvement, assign high value
-    double probability = get_card_draw_probability(1, card_count); // Only 1 out
-    int improvement = current_rank - 11; // Approximate four of a kind rank
-
-    return (int)(improvement * probability);
+    if (card_count == 5) {
+        return calculate_two_street_potential(cards, card_count, current_rank, sum_of_improvements, improving_out_count, is_out_card);
+    } else {
+        double avg_improvement = (double)sum_of_improvements / improving_out_count;
+        double probability = get_card_draw_probability(improving_out_count, card_count);
+        return (int)(avg_improvement * probability);
+    }
 }
 
 /*
@@ -748,4 +833,81 @@ void init_overcards_lut() {
 void init_all_potential_luts() {
     // No-op: tables are now compile-time generated
     printf("Info: All lookup tables are now compile-time generated - no initialization overhead!\n");
+}
+
+/**
+ * @brief Implements the user's refined two-street potential model.
+ *
+ * This function calculates potential on the flop by separately evaluating
+ * the value gained from hitting an out on the turn and the value gained
+ * from hitting an out on the river (after missing the turn), then summing them.
+ */
+static int calculate_two_street_potential(
+    int* cards,
+    int card_count,
+    int current_rank,
+    long long sum_of_improvements_turn,
+    int improving_out_count,
+    int* out_cards_lookup
+) {
+    if (card_count != 5 || improving_out_count == 0) {
+        return 0; // This logic is only for the flop with valid outs
+    }
+
+    // --- 1. Calculate Turn Potential ---
+    double avg_improvement_on_turn = (double)sum_of_improvements_turn / improving_out_count;
+    double prob_hit_on_turn = (double)improving_out_count / (52.0 - 5.0);
+    double turn_potential = avg_improvement_on_turn * prob_hit_on_turn;
+
+    // --- 2. Calculate River Potential (if we miss on turn) ---
+    long long river_sum_of_improvements = 0;
+    int blank_sim_count = 0;
+
+    int is_card_in_hand_on_flop[52] = {0};
+    for(int i=0; i<5; ++i) is_card_in_hand_on_flop[cards[i]] = 1;
+
+    // Simulate a "blank" turn card (one that is not an out)
+    for (int blank_turn_card_idx = 0; blank_turn_card_idx < 52; blank_turn_card_idx++) {
+        if (!is_card_in_hand_on_flop[blank_turn_card_idx] && !out_cards_lookup[blank_turn_card_idx]) {
+
+            int temp_hand_on_turn[6];
+            for(int i=0; i<5; ++i) temp_hand_on_turn[i] = cards[i];
+            temp_hand_on_turn[5] = blank_turn_card_idx;
+
+            int rank_on_turn = evaluate_6cards(
+                temp_hand_on_turn[0], temp_hand_on_turn[1], temp_hand_on_turn[2],
+                temp_hand_on_turn[3], temp_hand_on_turn[4], temp_hand_on_turn[5]
+            );
+
+            // Now, calculate improvement if we hit an out on the river
+            for (int out_card_idx = 0; out_card_idx < 52; out_card_idx++) {
+                if (out_cards_lookup[out_card_idx]) {
+                     int final_rank = evaluate_7cards(
+                        temp_hand_on_turn[0], temp_hand_on_turn[1], temp_hand_on_turn[2],
+                        temp_hand_on_turn[3], temp_hand_on_turn[4], temp_hand_on_turn[5],
+                        out_card_idx
+                     );
+                     if (final_rank < rank_on_turn) {
+                         river_sum_of_improvements += (rank_on_turn - final_rank);
+                     }
+                }
+            }
+            blank_sim_count++;
+        }
+    }
+
+    double river_potential = 0;
+    if (blank_sim_count > 0) {
+        // Average improvement over all blank turns and all outs
+        double avg_improvement_on_river = (double)river_sum_of_improvements / (blank_sim_count * improving_out_count);
+
+        // Probability of missing on turn AND hitting on river
+        double prob_miss_turn_and_hit_river =
+            ((52.0 - 5.0 - improving_out_count) / (52.0 - 5.0)) *
+            (improving_out_count / (52.0 - 6.0));
+
+        river_potential = avg_improvement_on_river * prob_miss_turn_and_hit_river;
+    }
+
+    return (int)(turn_potential + river_potential);
 }
