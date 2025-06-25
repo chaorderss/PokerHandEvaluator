@@ -4,6 +4,8 @@
  * VERSION 3.0: Uses compile-time generated lookup tables for zero initialization overhead
  */
 
+#include <stdio.h>
+
 #ifndef EVALUATOR_HOLDEM_POTENTIAL_H
 #define EVALUATOR_HOLDEM_POTENTIAL_H
 
@@ -48,21 +50,13 @@ int calculate_straight_potential_fast(int* cards, int card_count);
 int calculate_set_potential_fast(int h1, int h2, int* cards, int card_count);
 int calculate_overcards_potential_fast(int h1, int h2, int* cards, int card_count);
 
-/*
- * Original (slower) helper functions for calculating different types of potential
- * Kept for compatibility and testing
- */
-int calculate_flush_potential(int* cards, int card_count);
-int calculate_straight_potential(int* cards, int card_count);
+// =============== DEPRECATED / LEGACY (Do not use directly) ===============
+// These are older calculation functions, kept for reference inside the _original evaluator.
+// They are NOT used by the main evaluate_holdem_with_potential function.
+int calculate_flush_potential(int* cards, int card_count, int current_rank);
+int calculate_straight_potential(int* cards, int card_count, int current_rank);
 int calculate_set_potential(int h1, int h2, int* cards, int card_count);
 int calculate_overcards_potential(int h1, int h2, int* cards, int card_count);
-
-// Declarations for helper functions made non-static in .c file
-// These are needed if generate_potential_tables.c calls them directly or indirectly
-// when linked with evaluator_holdem_potential.o
-double get_card_draw_probability(int outs, int known_cards_count);
-int countSetBits(unsigned int n);
-int get_straight_outs_count(unsigned int hand_board_rank_mask, int current_card_count);
 
 /*
  * Convenience functions for different stages

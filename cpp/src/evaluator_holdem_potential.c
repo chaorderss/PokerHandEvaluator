@@ -20,10 +20,10 @@ extern int evaluate_6cards(int a, int b, int c, int d, int e, int f);
 extern int evaluate_7cards(int a, int b, int c, int d, int e, int f, int g);
 
 // Weights for different types of potential
-#define FLUSH_DRAW_WEIGHT 200    // 同花听牌权重
-#define STRAIGHT_DRAW_WEIGHT 150 // 顺子听牌权重
-#define SET_POTENTIAL_WEIGHT 100 // 对子改进权重
-#define OVERCARDS_WEIGHT 50      // 高牌权重
+#define FLUSH_DRAW_WEIGHT 500    // 同花听牌权重
+#define STRAIGHT_DRAW_WEIGHT 300 // 顺子听牌权重
+#define SET_POTENTIAL_WEIGHT 20 // 对子改进权重
+#define OVERCARDS_WEIGHT 10      // 高牌权重
 
 // =============== COMPILE-TIME LOOKUP TABLE SYSTEM ===============
 // All lookup tables are now statically defined in evaluator_holdem_potential_tables.h
@@ -60,36 +60,37 @@ int calculate_set_potential_fast(int h1, int h2, int* cards, int card_count) {
     int rank2 = h2 >> 2;
     if (rank1 != rank2) return 0;
 
+    // LUT is only for flop/turn potential
+    if (card_count >= 7) return 0;
+
     // Create board rank mask
     int board_mask = 0;
     for (int i = 2; i < card_count; i++) { // Skip hole cards
         board_mask |= (1 << (cards[i] >> 2));
     }
 
-    int remaining_cards = 7 - card_count;
-    if (remaining_cards < 0) remaining_cards = 0;
-    if (remaining_cards > 5) remaining_cards = 5;
-
-    return set_potential_lut[rank1][board_mask][remaining_cards];
+    // The warning was here. We were returning a pointer. Now we return the value.
+    return set_potential_lut[rank1][board_mask];
 }
 
 int calculate_overcards_potential_fast(int h1, int h2, int* cards, int card_count) {
     int rank1 = h1 >> 2;
     int rank2 = h2 >> 2;
 
-    // Find highest board card
-    int board_high = -1;
+    // LUT is only for flop/turn potential
+    if (card_count >= 7) return 0;
+
+    // The LUT key is rank1*13+rank2, ensure it's consistent
+    int hole_pattern = rank1 * 13 + rank2;
+
+    // Create board rank mask
+    int board_mask = 0;
     for (int i = 2; i < card_count; i++) {
-        int rank = cards[i] >> 2;
-        if (rank > board_high) {
-            board_high = rank;
-        }
+        board_mask |= (1 << (cards[i] >> 2));
     }
 
-    if (board_high < 0) board_high = 0; // No board cards
-
-    int hole_pattern = rank1 * 13 + rank2;
-    return overcards_lut[hole_pattern][board_high];
+    // Same fix here for consistency and safety
+    return overcards_lut[hole_pattern][board_mask];
 }
 
 /*
@@ -117,51 +118,89 @@ int evaluate_holdem_with_potential(int h1, int h2, int c1, int c2, int c3, int c
     if (c4 >= 0) available_cards[card_count++] = c4;
     if (c5 >= 0) available_cards[card_count++] = c5;
 
-    // Auto-determine stage based on community card count
-    int community_card_count = card_count - 2; // Total cards minus hole cards
-    int stage = 0; // Default to preflop
-    if (community_card_count == 3) stage = 1;      // flop
-    else if (community_card_count == 4) stage = 2; // turn
-    else if (community_card_count == 5) stage = 3; // river
-
     // Evaluate current hand strength
     if (card_count == 7) {
-        // River - full hand evaluation
         current_strength = evaluate_7cards(h1, h2, c1, c2, c3, c4, c5);
-    } else if (card_count >= 5) {
-        // Turn or later - evaluate best 5 cards
+    } else if (card_count == 6) {
+        current_strength = evaluate_6cards(available_cards[0], available_cards[1],
+                                         available_cards[2], available_cards[3],
+                                         available_cards[4], available_cards[5]);
+    } else if (card_count == 5) {
         current_strength = evaluate_5cards(available_cards[0], available_cards[1],
                                          available_cards[2], available_cards[3],
                                          available_cards[4]);
-    } else {
-        // Pre-flop or flop - assign base strength for pairs, high cards, etc.
-        current_strength = 7462; // Start with worst possible hand
-
-        // Check for pocket pairs
+    } else { // Pre-flop
+        current_strength = 7462; // Worst possible hand
         if ((h1 >> 2) == (h2 >> 2)) {
-            int pair_rank = h1 >> 2;
-            current_strength -= (pair_rank + 1) * 200; // Higher pairs get better scores
+            current_strength -= (h1 >> 2) * 100; // Simplified pair strength
         } else {
-            // High card evaluation
-            int rank1 = h1 >> 2;
-            int rank2 = h2 >> 2;
-            current_strength -= (rank1 + rank2) * 10;
+            current_strength -= ((h1 >> 2) + (h2 >> 2)); // High card strength
         }
     }
 
-    // Calculate potential bonuses using FAST lookup tables (only for incomplete hands)
-    if (card_count < 7) {
-        potential_bonus += calculate_flush_potential_fast(available_cards, card_count);
-        potential_bonus += calculate_straight_potential_fast(available_cards, card_count);
-        potential_bonus += calculate_set_potential_fast(h1, h2, available_cards, card_count);
-        potential_bonus += calculate_overcards_potential_fast(h1, h2, available_cards, card_count);
+    // --- MAJOR CHANGE: Use direct calculation instead of LUTs for accuracy ---
+    // Calculate potential bonuses based on remaining cards to be dealt
+    int remaining_cards = 7 - card_count;
+
+    if (remaining_cards > 0) {
+        // --- Start of Royal Flush Debug Block ---
+        // We use card encoded values: As=48, Ks=44, Qs=40, Js=36, Ts=32
+        int is_royal_flush_case = (h1 == 48 && h2 == 44 && c1 == 40 && c2 == 36 && c3 == 32);
+        if (is_royal_flush_case) {
+            printf("\n--- DEBUG: 皇家同花顺分析 ---\n");
+        }
+
+        int base_potential = 0;
+        int pot_f = 0, pot_s = 0, pot_set = 0, pot_oc = 0;
+
+        // --- NEW LOGIC: Only calculate set/overcard potential for non-made hands ---
+        // 1609 is the rank for A-5 straight. Anything better is a strong made hand.
+        if (current_strength > 1609) {
+            // Not a made hand yet, calculate all potentials
+            pot_f = calculate_flush_potential(available_cards, card_count, current_strength);
+            pot_s = calculate_straight_potential(available_cards, card_count, current_strength);
+            pot_set = calculate_set_potential(h1, h2, available_cards, card_count);
+            pot_oc = calculate_overcards_potential(h1, h2, available_cards, card_count);
+        } else {
+            // This is already a strong hand (Straight or better).
+            // Only calculate potential for further improvement (e.g., straight to flush).
+            // Do NOT calculate overcard/set potential for hands that are already strong.
+            pot_f = calculate_flush_potential(available_cards, card_count, current_strength);
+            pot_s = calculate_straight_potential(available_cards, card_count, current_strength);
+            // pot_set and pot_oc remain 0
+        }
+
+        if (is_royal_flush_case) {
+             printf("    当前强度 (current_strength): %d (1 is best)\n", current_strength);
+             printf("    同花潜力 (pot_f): %d\n", pot_f);
+             printf("    顺子潜力 (pot_s): %d\n", pot_s);
+             printf("    三条潜力 (pot_set): %d\n", pot_set);
+             printf("    高牌潜力 (pot_oc): %d\n", pot_oc);
+        }
+
+        base_potential = pot_f + pot_s + pot_set + pot_oc;
+        // Apply weight for turn vs flop
+        double potential_weight = (double)remaining_cards / 2.0;
+        potential_bonus = (int)(base_potential * potential_weight);
+
+        if (is_royal_flush_case) {
+            printf("    总基础潜力: %d, 权重: %.1f, 最终潜力奖励: %d\n", base_potential, potential_weight, potential_bonus);
+            printf("    最终分数 = %d - %d = %d\n", current_strength, potential_bonus, current_strength - potential_bonus);
+            printf("--- DEBUG END ---\n");
+        }
+        // --- End of Royal Flush Debug Block ---
     }
 
     // Combine current strength with potential
-    return current_strength - potential_bonus; // Lower numbers = better hands
+    return current_strength - potential_bonus;
 }
 
+// The get_card_draw_probability function has been moved to generate_potential_tables.c
+// to break a circular dependency during the build process. It is declared as extern
+// in the header file so this file can still use it.
+
 // Helper function to calculate the probability of completing a draw
+// This is a duplicate of the function in generate_potential_tables.c to avoid linking issues
 double get_card_draw_probability(int outs, int known_cards_count) {
     if (outs <= 0) return 0.0;
 
@@ -194,8 +233,8 @@ double get_card_draw_probability(int outs, int known_cards_count) {
 // =============== ORIGINAL FUNCTIONS (KEPT FOR COMPATIBILITY AND TESTING) ===============
 
 // Forward declarations for helper functions
-int calculate_flush_potential(int* cards, int card_count);
-int calculate_straight_potential(int* cards, int card_count);
+int calculate_flush_potential(int* cards, int card_count, int current_rank);
+int calculate_straight_potential(int* cards, int card_count, int current_rank);
 int calculate_set_potential(int h1, int h2, int* cards, int card_count);
 int calculate_overcards_potential(int h1, int h2, int* cards, int card_count);
 
@@ -241,8 +280,8 @@ int evaluate_holdem_with_potential_original(int h1, int h2, int c1, int c2, int 
 
     // Calculate potential bonuses using ORIGINAL (slower) methods
     if (card_count < 7) {
-        potential_bonus += calculate_flush_potential(available_cards, card_count);
-        potential_bonus += calculate_straight_potential(available_cards, card_count);
+        potential_bonus += calculate_flush_potential(available_cards, card_count, current_strength);
+        potential_bonus += calculate_straight_potential(available_cards, card_count, current_strength);
         potential_bonus += calculate_set_potential(h1, h2, available_cards, card_count);
         potential_bonus += calculate_overcards_potential(h1, h2, available_cards, card_count);
     }
@@ -251,45 +290,62 @@ int evaluate_holdem_with_potential_original(int h1, int h2, int c1, int c2, int 
 }
 
 /*
- * Calculate flush potential (同花听牌潜力) - ORIGINAL VERSION
- * MODIFIED to use probability.
+ * Calculate flush potential (同花听牌潜力) - REWRITTEN FOR EXPECTED RANK
+ * Calculates potential based on the average rank of completed hands.
  */
-int calculate_flush_potential(int* cards, int card_count) {
-    int suit_counts[4] = {0};
+int calculate_flush_potential(int* cards, int card_count, int current_rank) {
+    if (card_count >= 7) return 0;
 
-    // Count suits
+    int suit_counts[4] = {0};
+    int is_card_in_hand[52] = {0};
     for (int i = 0; i < card_count; i++) {
         suit_counts[cards[i] & 0x3]++;
+        is_card_in_hand[cards[i]] = 1;
     }
 
-    for (int suit_idx = 0; suit_idx < 4; suit_idx++) {
-        // Case 1: 4 cards to a flush (strong flush draw)
-        if (suit_counts[suit_idx] == 4) {
-            // This check is for flop (card_count == 5) or turn (card_count == 6)
-            if (card_count == 5 || card_count == 6) {
-                int outs = 13 - 4; // 9 outs for this suit
-                double probability = get_card_draw_probability(outs, card_count);
-                return (int)(probability * FLUSH_DRAW_WEIGHT); // Scale probability by original weight
-            }
-        }
-        // Case 2: 3 cards to a flush on the flop (backdoor flush draw)
-        else if (suit_counts[suit_idx] == 3 && card_count == 5) {
-            // Need two consecutive cards of the chosen suit.
-            // Probability = (outs_for_turn / remaining_on_flop) * (outs_for_river / remaining_on_turn_after_hit)
-            int outs_for_turn_card = 13 - 3; // 10 cards of this suit remaining
-            int outs_for_river_card = 13 - 4; // 9 cards of this suit remaining if turn hit
-
-            int remaining_cards_on_flop = 52 - card_count; // Should be 47
-
-            if (remaining_cards_on_flop >= 2) {
-                 double prob_bdfd = ((double)outs_for_turn_card / remaining_cards_on_flop) * \
-                                    ((double)outs_for_river_card / (remaining_cards_on_flop - 1));
-                 return (int)(prob_bdfd * (FLUSH_DRAW_WEIGHT / 2)); // Scale by original backdoor weight factor
-            }
+    int flush_draw_suit = -1;
+    for (int s = 0; s < 4; s++) {
+        if (suit_counts[s] == 4) { // Strong flush draw
+            flush_draw_suit = s;
+            break;
         }
     }
 
-    return 0; // No significant flush draw found or not on a stage where we calculate this
+    if (flush_draw_suit == -1) return 0;
+
+    long long sum_of_improvements = 0;
+    int improving_out_count = 0;
+    int temp_hand[7];
+    for(int i=0; i<card_count; ++i) temp_hand[i] = cards[i];
+
+    // Find all outs and calculate average rank of completed hand
+    for (int r = 0; r < 13; r++) {
+        int out_card = (r << 2) | flush_draw_suit;
+        if (!is_card_in_hand[out_card]) {
+            temp_hand[card_count] = out_card;
+            int rank = 0;
+            // Evaluate based on the next stage
+            if (card_count == 5) { // Flop -> evaluate 6 cards
+                rank = evaluate_6cards(temp_hand[0], temp_hand[1], temp_hand[2], temp_hand[3], temp_hand[4], temp_hand[5]);
+            } else if (card_count == 6) { // Turn -> evaluate 7 cards
+                rank = evaluate_7cards(temp_hand[0], temp_hand[1], temp_hand[2], temp_hand[3], temp_hand[4], temp_hand[5], temp_hand[6]);
+            }
+
+            // --- NEW LOGIC: Only count IMPROVING hands ---
+            if (rank < current_rank) {
+                sum_of_improvements += (current_rank - rank);
+                improving_out_count++;
+            }
+        }
+    }
+
+    if (improving_out_count == 0) return 0;
+
+    double avg_improvement = (double)sum_of_improvements / improving_out_count;
+    // Probability is now based on hitting one of the IMPROVING outs
+    double probability = get_card_draw_probability(improving_out_count, card_count);
+
+    return (int)(avg_improvement * probability);
 }
 
 // Helper function to count set bits in an integer
@@ -331,17 +387,20 @@ int get_straight_outs_count(unsigned int hand_board_rank_mask, int current_card_
                 // high_card_straight_rank: 12 (Ace for TJQKA) down to 3 (Five for A2345)
                 unsigned int target_straight_mask;
                 if (high_card_straight_rank == 3) { // A2345 straight (ranks A,2,3,4,5 -> bits 12,0,1,2,3)
-                    target_straight_mask = (1 << 12) | (1 << 0) | (1 << 1) | (1 << 2) | (1 << 3);
+                    target_straight_mask = (1U << 12) | (1U << 0) | (1U << 1) | (1U << 2) | (1U << 3);
                 } else { // Other straights (e.g., high_card_straight_rank = 4 for 23456)
-                    target_straight_mask = (1 << high_card_straight_rank) |
-                                           (1 << (high_card_straight_rank - 1)) |
-                                           (1 << (high_card_straight_rank - 2)) |
-                                           (1 << (high_card_straight_rank - 3)) |
-                                           (1 << (high_card_straight_rank - 4));
+                    target_straight_mask = (1U << high_card_straight_rank) |
+                                           (1U << (high_card_straight_rank - 1)) |
+                                           (1U << (high_card_straight_rank - 2)) |
+                                           (1U << (high_card_straight_rank - 3)) |
+                                           (1U << (high_card_straight_rank - 4));
                 }
 
-                // If the `potential_new_mask` (hand/board + current out_rank_idx) contains this `target_straight_mask`
-                if ((potential_new_mask & target_straight_mask) == target_straight_mask) {
+                // If the `potential_new_mask` (hand/board + current out_rank_idx) contains a straight
+                // that is NOT possible with the hand/board alone, then this is a valid out.
+                if (((potential_new_mask & target_straight_mask) == target_straight_mask) &&
+                    !((hand_board_rank_mask & target_straight_mask) == target_straight_mask))
+                {
                     distinct_rank_outs++; // This rank (out_rank_idx) is an out
                     goto next_out_rank; // Count each out rank once, then move to the next potential out rank
                 }
@@ -353,32 +412,74 @@ int get_straight_outs_count(unsigned int hand_board_rank_mask, int current_card_
 }
 
 /*
- * Calculate straight potential (顺子听牌潜力) - ORIGINAL VERSION
- * MODIFIED to use probability based on outs.
+ * Calculate straight potential (顺子听牌潜力) - REWRITTEN FOR EXPECTED RANK
+ * Calculates potential based on the average rank of completed hands.
  */
-int calculate_straight_potential(int* cards, int card_count) {
-    if (card_count >= 7) return 0; // No potential if all cards dealt
+int calculate_straight_potential(int* cards, int card_count, int current_rank) {
+    if (card_count >= 7) return 0;
 
     unsigned int rank_mask = 0;
+    int is_card_in_hand[52] = {0};
     for (int i = 0; i < card_count; i++) {
-        rank_mask |= (1 << (cards[i] >> 2)); // card_rank = cards[i] >> 2
+        rank_mask |= (1 << (cards[i] >> 2));
+        is_card_in_hand[cards[i]] = 1;
     }
 
-    int num_total_outs = get_straight_outs_count(rank_mask, card_count);
+    int out_cards[52]; // Store actual card values of outs
+    int total_out_count = 0;
 
-    if (num_total_outs > 0) {
-        double probability = get_card_draw_probability(num_total_outs, card_count);
+    // Find all potential outs that complete any straight
+    for (int r = 0; r < 13; r++) { // Iterate through all possible ranks
+        if (!((rank_mask >> r) & 1)) { // If this rank is a potential out
+            unsigned int temp_mask = rank_mask | (1 << r);
+            // Check if adding this rank completes a straight that wasn't there before
+            for (int high = 12; high >= 3; high--) {
+                unsigned int straight_mask = (high == 3) ? 0x100F : (((1U << 5) - 1) << (high - 4));
 
-        // Apply new weighting logic based on outs
-        if (num_total_outs == 8) {
-            return (int)(probability * STRAIGHT_DRAW_WEIGHT);
-        } else {
-            // For num_total_outs > 0 and != 8
-            return (int)(probability * STRAIGHT_DRAW_WEIGHT * (double)num_total_outs / 8.0);
+                if (((temp_mask & straight_mask) == straight_mask) && !((rank_mask & straight_mask) == straight_mask)) {
+                    // This rank `r` completes a new straight. Add all 4 suits to outs list.
+                    for (int s = 0; s < 4; s++) {
+                        int out_card = (r << 2) | s;
+                        if (!is_card_in_hand[out_card]) {
+                            out_cards[total_out_count++] = out_card;
+                        }
+                    }
+                    goto next_rank_in_calc; // Found it's an out, move to the next rank
+                }
+            }
+        }
+        next_rank_in_calc:;
+    }
+
+    if (total_out_count == 0) return 0;
+
+    long long sum_of_improvements = 0;
+    int improving_out_count = 0;
+    int temp_hand[7];
+    for(int i=0; i<card_count; ++i) temp_hand[i] = cards[i];
+
+    for (int i = 0; i < total_out_count; i++) {
+        temp_hand[card_count] = out_cards[i];
+        int rank = 0;
+        if (card_count == 5) { // Flop -> evaluate 6 cards
+            rank = evaluate_6cards(temp_hand[0], temp_hand[1], temp_hand[2], temp_hand[3], temp_hand[4], temp_hand[5]);
+        } else if (card_count == 6) { // Turn -> evaluate 7 cards
+            rank = evaluate_7cards(temp_hand[0], temp_hand[1], temp_hand[2], temp_hand[3], temp_hand[4], temp_hand[5], temp_hand[6]);
+        }
+
+        // --- NEW LOGIC: Only count IMPROVING hands ---
+        if (rank < current_rank) {
+            sum_of_improvements += (current_rank - rank);
+            improving_out_count++;
         }
     }
 
-    return 0;
+    if (improving_out_count == 0) return 0;
+
+    double avg_improvement = (double)sum_of_improvements / improving_out_count;
+    double probability = get_card_draw_probability(improving_out_count, card_count);
+
+    return (int)(avg_improvement * probability);
 }
 
 /*
@@ -410,14 +511,26 @@ int calculate_set_potential(int h1, int h2, int* cards, int card_count) {
 int calculate_overcards_potential(int h1, int h2, int* cards, int card_count) {
     int hole_ranks[2] = {h1 >> 2, h2 >> 2};
     int board_high = -1;
+    unsigned int board_rank_mask = 0;
 
-    // Find highest board card
+    // Find highest board card and create rank mask
     for (int i = 2; i < card_count; i++) {
         int rank = cards[i] >> 2;
         if (rank > board_high) {
             board_high = rank;
         }
+        board_rank_mask |= (1 << rank);
     }
+
+    // --- NEW: Check if we already hit a pair or better ---
+    // If either of our hole cards matches a board card, we've made a pair.
+    // In this case, overcard potential is zero because the potential has been realized.
+    if ((board_rank_mask & (1 << hole_ranks[0])) || (board_rank_mask & (1 << hole_ranks[1]))) {
+        return 0;
+    }
+    // Also, if the hand is already very strong (e.g. flush, straight), no overcard potential
+    // This is implicitly handled by the main evaluator now, but this check is a good safeguard.
+    // A more robust check could involve passing current_rank and returning 0 if it's high.
 
     int overcard_count = 0;
     for (int i = 0; i < 2; i++) {

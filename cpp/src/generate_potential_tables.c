@@ -8,30 +8,84 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 // #include <math.h>
 #include "../include/phevaluator/phevaluator.h"
 #include "../include/phevaluator/evaluator_holdem_potential.h" // Ensure this is included to get declarations
 
-// Constants (must match evaluator_holdem_potential.c)
-#define FLUSH_DRAW_WEIGHT 200
-#define STRAIGHT_DRAW_WEIGHT 150
-#define SET_POTENTIAL_WEIGHT 100
-#define OVERCARDS_WEIGHT 50
+// Global variables for weights (will be set from command line arguments)
+static int FLUSH_DRAW_WEIGHT = 500;      // Default values
+static int STRAIGHT_DRAW_WEIGHT = 300;
+static int SET_POTENTIAL_WEIGHT = 4;
+static int OVERCARDS_WEIGHT = 2;
 
 // Function prototypes for table generation
 void generate_flush_potential_lut(FILE* fp);
 void generate_straight_potential_lut(FILE* fp);
 void generate_set_potential_lut(FILE* fp);
 void generate_overcards_lut(FILE* fp);
+void print_usage(const char* program_name);
+
+// We need access to the core evaluators to calculate ranks of completed hands
+extern int evaluate_5cards(int, int, int, int, int);
+extern int evaluate_6cards(int, int, int, int, int, int);
+extern int evaluate_7cards(int, int, int, int, int, int, int);
+// Also need the probability function
+extern double get_card_draw_probability(int outs, int known_cards_count);
 
 int main(int argc, char** argv) {
     const char* output_file = "evaluator_holdem_potential_tables.h";
 
-    if (argc > 1) {
-        output_file = argv[1];
+    // Parse command line arguments
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
+            print_usage(argv[0]);
+            return 0;
+        } else if (strcmp(argv[i], "-o") == 0 || strcmp(argv[i], "--output") == 0) {
+            if (i + 1 < argc) {
+                output_file = argv[++i];
+            } else {
+                fprintf(stderr, "Error: -o/--output requires a filename\n");
+                print_usage(argv[0]);
+                return 1;
+            }
+        } else if (strcmp(argv[i], "--flush-weight") == 0) {
+            if (i + 1 < argc) {
+                FLUSH_DRAW_WEIGHT = atoi(argv[++i]);
+            } else {
+                fprintf(stderr, "Error: --flush-weight requires a value\n");
+                return 1;
+            }
+        } else if (strcmp(argv[i], "--straight-weight") == 0) {
+            if (i + 1 < argc) {
+                STRAIGHT_DRAW_WEIGHT = atoi(argv[++i]);
+            } else {
+                fprintf(stderr, "Error: --straight-weight requires a value\n");
+                return 1;
+            }
+        } else if (strcmp(argv[i], "--set-weight") == 0) {
+            if (i + 1 < argc) {
+                SET_POTENTIAL_WEIGHT = atoi(argv[++i]);
+            } else {
+                fprintf(stderr, "Error: --set-weight requires a value\n");
+                return 1;
+            }
+        } else if (strcmp(argv[i], "--overcards-weight") == 0) {
+            if (i + 1 < argc) {
+                OVERCARDS_WEIGHT = atoi(argv[++i]);
+            } else {
+                fprintf(stderr, "Error: --overcards-weight requires a value\n");
+                return 1;
+            }
+        } else {
+            // For backward compatibility, if it's just a filename without flag
+            output_file = argv[i];
+        }
     }
 
     printf("Generating lookup tables to %s...\n", output_file);
+    printf("Using weights: FLUSH=%d, STRAIGHT=%d, SET=%d, OVERCARDS=%d\n",
+           FLUSH_DRAW_WEIGHT, STRAIGHT_DRAW_WEIGHT, SET_POTENTIAL_WEIGHT, OVERCARDS_WEIGHT);
 
     FILE* fp = fopen(output_file, "w");
     if (!fp) {
@@ -61,60 +115,112 @@ int main(int argc, char** argv) {
 
     printf("Successfully generated lookup tables!\n");
     printf("Memory usage:\n");
-    printf("  - Flush potential LUT: %zu bytes\n", 65536 * sizeof(int));
-    printf("  - Straight potential LUT: %zu bytes\n", 8192 * sizeof(int));
-    printf("  - Set potential LUT: %zu bytes\n", 13 * 8192 * 6 * sizeof(int));
-    printf("  - Overcards LUT: %zu bytes\n", 13 * 13 * 13 * sizeof(int));
+    printf("  - Flush potential LUT: %zu bytes\n", (size_t)65536 * sizeof(int));
+    printf("  - Straight potential LUT: %zu bytes\n", (size_t)8192 * sizeof(int));
+    printf("  - Set potential LUT: %zu bytes\n", (size_t)13 * 8192 * sizeof(int));
+    printf("  - Overcards LUT: %zu bytes\n", (size_t)169 * 8192 * sizeof(int));
     printf("  - Total: %zu bytes (%.2f MB)\n",
-           65536 * sizeof(int) + 8192 * sizeof(int) + 13 * 8192 * 6 * sizeof(int) + 13 * 13 * 13 * sizeof(int),
-           (65536 * sizeof(int) + 8192 * sizeof(int) + 13 * 8192 * 6 * sizeof(int) + 13 * 13 * 13 * sizeof(int)) / 1024.0 / 1024.0);
+           (size_t)65536 * sizeof(int) +
+           (size_t)8192 * sizeof(int) +
+           (size_t)13 * 8192 * sizeof(int) +
+           (size_t)169 * 8192 * sizeof(int),
+           ((size_t)65536 * sizeof(int) +
+            (size_t)8192 * sizeof(int) +
+            (size_t)13 * 8192 * sizeof(int) +
+            (size_t)169 * 8192 * sizeof(int)) / 1024.0 / 1024.0);
 
     return 0;
 }
 
 void generate_flush_potential_lut(FILE* fp) {
-    printf("Generating flush potential lookup table (using new probability logic)...\n");
+    printf("Generating flush potential lookup table (using IMPROVEMENT-ONLY logic)...\n");
 
     fprintf(fp, "// Flush potential lookup table: [suit_pattern] -> potential_value\n");
-    fprintf(fp, "// suit_pattern encodes the count of each suit as a 16-bit value: 4 bits per suit\n");
+    fprintf(fp, "// Based on EXPECTED IMPROVEMENT of completed hands.\n");
     fprintf(fp, "static const int flush_potential_lut[65536] = {\n");
 
-    int dummy_cards[7]; // Max 7 cards
+    int temp_hand[7];
 
     for (int pattern = 0; pattern < 65536; pattern++) {
         int suits[4] = {
-            (pattern >> 0) & 0xF,
-            (pattern >> 4) & 0xF,
-            (pattern >> 8) & 0xF,
-            (pattern >> 12) & 0xF
+            (pattern >> 0) & 0xF, (pattern >> 4) & 0xF,
+            (pattern >> 8) & 0xF, (pattern >> 12) & 0xF
         };
 
-        int card_count = 0;
-        for(int s_idx=0; s_idx<4; ++s_idx) card_count += suits[s_idx];
+        int card_count = suits[0] + suits[1] + suits[2] + suits[3];
+        if (card_count < 4 || card_count > 6) { // Only calculate for flop/turn stages
+            fprintf(fp, "0,");
+            if (pattern % 16 == 15) fprintf(fp, "\n");
+            continue;
+        }
 
-        int current_dummy_idx = 0;
-        if (card_count > 0 && card_count <= 7) {
-            for (int s_idx = 0; s_idx < 4; ++s_idx) {
-                for (int c = 0; c < suits[s_idx]; ++c) {
-                    if (current_dummy_idx < card_count) {
-                        // Assign a unique rank for each card to avoid issues with other potential calcs if they were used
-                        // For flush potential, only suit matters. Rank is (current_dummy_idx << 2)
-                        dummy_cards[current_dummy_idx] = (current_dummy_idx << 2) | s_idx;
-                        current_dummy_idx++;
-                    }
+        int flush_draw_suit = -1;
+        for (int s = 0; s < 4; s++) {
+            if (suits[s] == 4) {
+                flush_draw_suit = s;
+                break;
+            }
+        }
+
+        if (flush_draw_suit == -1) {
+            fprintf(fp, "0,");
+            if (pattern % 16 == 15) fprintf(fp, "\n");
+            continue;
+        }
+
+        // Reconstruct a dummy hand to get a representative current_rank
+        int current_card = 0;
+        int ranks_in_suit[13] = {0};
+        int rank_idx = 12;
+        for (int s = 0; s < 4; s++) {
+            for (int i = 0; i < suits[s]; i++) {
+                while(rank_idx >= 0 && ( ( (1 << rank_idx) & 0b1111111111111) == 0 ) ) { rank_idx--; }
+                if (rank_idx < 0) rank_idx = 12;
+                int rank = rank_idx--;
+                temp_hand[current_card] = (rank << 2) | s;
+                if(s == flush_draw_suit) ranks_in_suit[rank] = 1;
+                current_card++;
+            }
+        }
+
+        int current_rank = 0;
+        if (card_count == 5) {
+            current_rank = evaluate_5cards(temp_hand[0], temp_hand[1], temp_hand[2], temp_hand[3], temp_hand[4]);
+        } else if (card_count == 6) {
+            current_rank = evaluate_6cards(temp_hand[0], temp_hand[1], temp_hand[2], temp_hand[3], temp_hand[4], temp_hand[5]);
+        }
+
+        // --- NEW LOGIC: Only count improving hands ---
+        long long sum_of_improvements = 0;
+        int improving_out_count = 0;
+
+        // Find outs and calculate average improvement
+        for (int r = 0; r < 13; r++) {
+            if (!ranks_in_suit[r]) {
+                temp_hand[card_count] = (r << 2) | flush_draw_suit;
+                int rank = 0;
+                if (card_count == 5) {
+                    rank = evaluate_6cards(temp_hand[0], temp_hand[1], temp_hand[2], temp_hand[3], temp_hand[4], temp_hand[5]);
+                } else if (card_count == 6) {
+                    rank = evaluate_7cards(temp_hand[0], temp_hand[1], temp_hand[2], temp_hand[3], temp_hand[4], temp_hand[5], temp_hand[6]);
+                }
+
+                if (rank < current_rank) {
+                    sum_of_improvements += (current_rank - rank);
+                    improving_out_count++;
                 }
             }
-        } else if (card_count > 7) { // Invalid pattern, more than 7 cards specified by suit counts
-             card_count = 0; // Treat as no potential
         }
 
         int potential = 0;
-        if (card_count >= 2 && card_count <= 7) { // Need at least 2 cards for any potential
-             potential = calculate_flush_potential(dummy_cards, card_count);
+        if (improving_out_count > 0) {
+            double avg_improvement = (double)sum_of_improvements / improving_out_count;
+            double probability = get_card_draw_probability(improving_out_count, card_count);
+            potential = (int)(avg_improvement * probability);
         }
+        // --- End of new logic ---
 
-        fprintf(fp, "%d", potential);
-        if (pattern < 65535) fprintf(fp, ",");
+        fprintf(fp, "%d,", potential);
         if (pattern % 16 == 15) fprintf(fp, "\n");
     }
 
@@ -122,105 +228,309 @@ void generate_flush_potential_lut(FILE* fp) {
 }
 
 void generate_straight_potential_lut(FILE* fp) {
-    printf("Generating straight potential lookup table (using new probability logic, assuming flop stage)...\n");
+    printf("Generating straight potential lookup table (using IMPROVEMENT-ONLY logic)...\n");
 
     fprintf(fp, "// Straight potential lookup table: [rank_pattern] -> potential_value\n");
-    fprintf(fp, "// rank_pattern encodes which ranks are present as a 13-bit mask\n");
-    fprintf(fp, "// Assumes card_count = 5 (flop) for probability calculations.\n");
+    fprintf(fp, "// Based on EXPECTED IMPROVEMENT of completed hands.\n");
     fprintf(fp, "static const int straight_potential_lut[8192] = {\n");
 
-    int assumed_card_count_for_lut = 5; // For flop stage
+    int temp_hand[7];
+    int out_cards[52];
 
-    for (int pattern = 0; pattern < 8192; pattern++) { // pattern is the rank_mask
-        int potential = 0;
-        int num_total_outs = get_straight_outs_count(pattern, assumed_card_count_for_lut);
+    for (int rank_mask = 0; rank_mask < 8192; rank_mask++) {
+        int card_count = 0;
+        // For LUT generation, we assume a flop situation (5 cards total)
+        // as this is the most critical stage for potential.
+        int assumed_card_count = 5;
 
-        if (num_total_outs > 0) {
-            double probability = get_card_draw_probability(num_total_outs, assumed_card_count_for_lut);
+        // Reconstruct a dummy hand from the rank_mask
+        // This is a major simplification. We assign suits cyclically.
+        int current_card = 0;
+        for (int r = 0; r < 13; r++) {
+            if ((rank_mask >> r) & 1) {
+                if(current_card < assumed_card_count) {
+                    temp_hand[current_card] = (r << 2) | (current_card % 4);
+                    current_card++;
+                }
+            }
+        }
+        card_count = current_card;
+        if (card_count != assumed_card_count) {
+             // This mask is not possible with 5 cards, skip.
+             fprintf(fp, "0,");
+             if (rank_mask % 16 == 15) fprintf(fp, "\n");
+             continue;
+        }
 
-            if (num_total_outs == 8) {
-                potential = (int)(probability * STRAIGHT_DRAW_WEIGHT);
-            } else {
-                potential = (int)(probability * STRAIGHT_DRAW_WEIGHT * (double)num_total_outs / 8.0);
+        int current_rank = evaluate_5cards(temp_hand[0], temp_hand[1], temp_hand[2], temp_hand[3], temp_hand[4]);
+
+        // Find all outs that complete a straight
+        int total_out_count = 0;
+        for (int r = 0; r < 13; r++) {
+            if (!((rank_mask >> r) & 1)) {
+                unsigned int temp_mask = rank_mask | (1 << r);
+                for (int high = 12; high >= 3; high--) {
+                    unsigned int straight_mask = (high == 3) ? 0x100F : (((1U << 5) - 1) << (high - 4));
+                    if (((temp_mask & straight_mask) == straight_mask) && !((rank_mask & straight_mask) == straight_mask)) {
+                        for (int s = 0; s < 4; s++) { out_cards[total_out_count++] = (r << 2) | s; }
+                        goto next_lut_rank_gen;
+                    }
+                }
+            }
+            next_lut_rank_gen:;
+        }
+
+        if (total_out_count == 0) { fprintf(fp, "0,"); if (rank_mask % 16 == 15) fprintf(fp, "\n"); continue; }
+
+        // --- NEW LOGIC: Only count improving hands ---
+        long long sum_of_improvements = 0;
+        int improving_out_count = 0;
+        for (int i = 0; i < total_out_count; i++) {
+            temp_hand[assumed_card_count] = out_cards[i];
+            int rank = evaluate_6cards(temp_hand[0],temp_hand[1],temp_hand[2],temp_hand[3],temp_hand[4],temp_hand[5]);
+            if (rank < current_rank) {
+                sum_of_improvements += (current_rank - rank);
+                improving_out_count++;
             }
         }
 
-        fprintf(fp, "%d", potential);
-        if (pattern < 8191) fprintf(fp, ",");
-        if (pattern % 16 == 15) fprintf(fp, "\n");
+        int potential = 0;
+        if (improving_out_count > 0) {
+            double avg_improvement = (double)sum_of_improvements / improving_out_count;
+            double probability = get_card_draw_probability(improving_out_count, assumed_card_count);
+            potential = (int)(avg_improvement * probability);
+        }
+        // --- End of new logic ---
+
+        fprintf(fp, "%d,", potential);
+        if (rank_mask % 16 == 15) fprintf(fp, "\n");
     }
 
     fprintf(fp, "};\n\n");
 }
 
 void generate_set_potential_lut(FILE* fp) {
-    printf("Generating set potential lookup table...\n");
+    printf("Generating set potential lookup table (using IMPROVEMENT-ONLY logic)...\n");
 
-    fprintf(fp, "// Set potential lookup table: [pair_rank][board_mask][remaining_cards] -> potential_value\n");
-    fprintf(fp, "static const int set_potential_lut[13][8192][6] = {\n");
+    fprintf(fp, "// Set potential lookup table: [pair_rank][board_mask] -> potential_value\n");
+    fprintf(fp, "static const int set_potential_lut[13][8192] = {\n");
+
+    int temp_hand[7];
+    int assumed_card_count = 5;
 
     for (int pair_rank = 0; pair_rank < 13; pair_rank++) {
         fprintf(fp, "  { // pair_rank = %d\n", pair_rank);
-
         for (int board_mask = 0; board_mask < 8192; board_mask++) {
-            fprintf(fp, "    {");
-
-            for (int remaining = 0; remaining < 6; remaining++) {
-                int potential;
-
-                // Check if pair rank appears on board (already made set)
-                if (board_mask & (1 << pair_rank)) {
-                    potential = 0;
-                } else {
-                    // Award potential based on remaining cards
-                    potential = (SET_POTENTIAL_WEIGHT * remaining) / 5;
-                }
-
-                fprintf(fp, "%d", potential);
-                if (remaining < 5) fprintf(fp, ",");
+            if (board_mask & (1 << pair_rank)) {
+                fprintf(fp, "0,");
+                if (board_mask % 16 == 15) fprintf(fp, "\n");
+                continue;
             }
 
-            fprintf(fp, "}");
-            if (board_mask < 8191) fprintf(fp, ",");
-            if (board_mask % 8 == 7) fprintf(fp, "\n");
+            int hole1 = (pair_rank << 2) | 0; // e.g., 7s
+            int hole2 = (pair_rank << 2) | 1; // e.g., 7h
+            temp_hand[0] = hole1;
+            temp_hand[1] = hole2;
+
+            int is_card_in_hand[52] = {0};
+            is_card_in_hand[hole1] = 1;
+            is_card_in_hand[hole2] = 1;
+
+            int board_card_count = 0;
+            for(int r = 0; r < 13; r++) {
+                if((board_mask >> r) & 1) {
+                    board_card_count++;
+                }
+            }
+            if (board_card_count != 3) {
+                 fprintf(fp, "0,"); // This LUT is only for flop (3 board cards)
+                 if (board_mask % 16 == 15) fprintf(fp, "\n");
+                 continue;
+            }
+
+            // Reconstruct a valid board
+            int current_board_cards = 0;
+            for(int r = 0; r < 13; r++) {
+                 if((board_mask >> r) & 1) {
+                    int card = -1;
+                    for (int s = 0; s < 4; s++) {
+                        if (!is_card_in_hand[(r << 2) | s]) {
+                            card = (r << 2) | s;
+                            is_card_in_hand[card] = 1;
+                            break;
+                        }
+                    }
+                    temp_hand[2 + current_board_cards++] = card;
+                }
+            }
+
+            int current_rank = evaluate_5cards(temp_hand[0], temp_hand[1], temp_hand[2], temp_hand[3], temp_hand[4]);
+
+            int outs[] = {(pair_rank << 2) | 2, (pair_rank << 2) | 3};
+            int total_out_count = 2;
+
+            // --- NEW LOGIC ---
+            long long sum_of_improvements = 0;
+            int improving_out_count = 0;
+            for (int i = 0; i < total_out_count; i++) {
+                temp_hand[assumed_card_count] = outs[i];
+                int rank = evaluate_6cards(temp_hand[0], temp_hand[1], temp_hand[2], temp_hand[3], temp_hand[4], temp_hand[5]);
+                if (rank < current_rank) {
+                    sum_of_improvements += (current_rank - rank);
+                    improving_out_count++;
+                }
+            }
+
+            int potential = 0;
+            if (improving_out_count > 0) {
+                 double avg_improvement = (double)sum_of_improvements / improving_out_count;
+                 double probability = get_card_draw_probability(improving_out_count, assumed_card_count);
+                 potential = (int)(avg_improvement * probability);
+            }
+            // --- END NEW LOGIC ---
+
+            fprintf(fp, "%d,", potential);
+            if (board_mask % 16 == 15) fprintf(fp, "\n");
         }
-
-        fprintf(fp, "  }");
-        if (pair_rank < 12) fprintf(fp, ",");
-        fprintf(fp, "\n");
+        fprintf(fp, "  },\n");
     }
-
     fprintf(fp, "};\n\n");
 }
 
 void generate_overcards_lut(FILE* fp) {
-    printf("Generating overcards lookup table...\n");
+    printf("Generating overcards lookup table (using IMPROVEMENT-ONLY logic)...\n");
 
-    fprintf(fp, "// Overcards lookup table: [hole_pattern][board_high] -> potential_value\n");
-    fprintf(fp, "// hole_pattern: encodes the two hole card ranks, board_high: 0-12\n");
-    fprintf(fp, "static const int overcards_lut[169][13] = {\n");
+    fprintf(fp, "// Overcards lookup table: [hole_pattern][board_mask] -> potential_value\n");
+    fprintf(fp, "// hole_pattern: rank1 * 13 + rank2\n");
+    fprintf(fp, "static const int overcards_lut[169][8192] = {\n");
 
-    for (int hole_pattern = 0; hole_pattern < 13*13; hole_pattern++) {
-        int rank1 = hole_pattern / 13;
-        int rank2 = hole_pattern % 13;
+    int temp_hand[7];
+    int assumed_card_count = 5;
 
-        fprintf(fp, "  {");
+    for (int hole_pattern = 0; hole_pattern < 169; hole_pattern++) {
+        fprintf(fp, "  { // hole_pattern = %d\n", hole_pattern);
+        int r1 = hole_pattern / 13;
+        int r2 = hole_pattern % 13;
 
-        for (int board_high = 0; board_high < 13; board_high++) {
-            int overcard_count = 0;
-            if (rank1 > board_high) overcard_count++;
-            if (rank2 > board_high) overcard_count++;
+        for (int board_mask = 0; board_mask < 8192; board_mask++) {
+            int hole1 = (r1 << 2) | 0;
+            int hole2 = (r2 << 2) | ((r1 == r2) ? 1 : 0);
 
-            int potential = overcard_count * OVERCARDS_WEIGHT;
+            int is_card_in_hand[52] = {0};
+            is_card_in_hand[hole1] = 1;
+            is_card_in_hand[hole2] = 1;
 
-            fprintf(fp, "%d", potential);
-            if (board_high < 12) fprintf(fp, ",");
+            temp_hand[0] = hole1;
+            temp_hand[1] = hole2;
+
+            int board_card_count = 0;
+            int board_high = -1;
+             for(int r = 12; r >= 0; r--) {
+                if((board_mask >> r) & 1) {
+                    if (board_high == -1) board_high = r;
+                    board_card_count++;
+                }
+            }
+
+            if (board_card_count != 3) {
+                 fprintf(fp, "0,");
+                 if (board_mask % 16 == 15) fprintf(fp, "\n");
+                 continue;
+            }
+
+            int current_board_cards = 0;
+            for(int r = 0; r < 13; r++) {
+                if((board_mask >> r) & 1) {
+                    int card = -1;
+                    for (int s = 0; s < 4; s++) {
+                        if (!is_card_in_hand[(r << 2) | s]) {
+                            card = (r << 2) | s;
+                            is_card_in_hand[card] = 1;
+                            break;
+                        }
+                    }
+                    temp_hand[2 + current_board_cards++] = card;
+                }
+            }
+
+            int current_rank = evaluate_5cards(temp_hand[0], temp_hand[1], temp_hand[2], temp_hand[3], temp_hand[4]);
+
+            // Find overcard outs
+            int out_cards[6]; int total_out_count = 0;
+            if (r1 > board_high) {
+                for (int s=0;s<4;s++) { if(!is_card_in_hand[(r1<<2)|s]) out_cards[total_out_count++]=(r1<<2)|s;}
+            }
+            if (r1 != r2 && r2 > board_high) {
+                 for (int s=0;s<4;s++) { if(!is_card_in_hand[(r2<<2)|s]) out_cards[total_out_count++]=(r2<<2)|s;}
+            }
+            if (total_out_count == 0) { fprintf(fp, "0,"); if (board_mask % 16 == 15) fprintf(fp, "\n"); continue; }
+
+            // --- NEW LOGIC ---
+            long long sum_of_improvements = 0;
+            int improving_out_count = 0;
+            for (int i = 0; i < total_out_count; i++) {
+                temp_hand[assumed_card_count] = out_cards[i];
+                int rank = evaluate_6cards(temp_hand[0], temp_hand[1], temp_hand[2], temp_hand[3], temp_hand[4], temp_hand[5]);
+                if(rank < current_rank) {
+                    sum_of_improvements += (current_rank - rank);
+                    improving_out_count++;
+                }
+            }
+
+            int potential = 0;
+            if(improving_out_count > 0) {
+                double avg_improvement = (double)sum_of_improvements / improving_out_count;
+                double probability = get_card_draw_probability(improving_out_count, assumed_card_count);
+                potential = (int)(avg_improvement * probability);
+            }
+            // --- END NEW LOGIC ---
+
+            fprintf(fp, "%d,", potential);
+            if (board_mask % 16 == 15) fprintf(fp, "\n");
         }
-
-        fprintf(fp, "}");
-        if (hole_pattern < 168) fprintf(fp, ",");
-        fprintf(fp, "\n");
+        fprintf(fp, "  },\n");
     }
-
     fprintf(fp, "};\n\n");
+}
+
+void print_usage(const char* program_name) {
+    printf("Usage: %s [OPTIONS]\n", program_name);
+    printf("Generate lookup tables for Texas Hold'em Potential Evaluator\n\n");
+    printf("Options:\n");
+    printf("  -h, --help                Show this help message\n");
+    printf("  -o, --output FILE         Output file (default: evaluator_holdem_potential_tables.h)\n");
+    printf("  --flush-weight VALUE      Flush draw weight (default: 500)\n");
+    printf("  --straight-weight VALUE   Straight draw weight (default: 300)\n");
+    printf("  --set-weight VALUE        Set potential weight (default: 4)\n");
+    printf("  --overcards-weight VALUE  Overcards weight (default: 2)\n\n");
+    printf("Examples:\n");
+    printf("  %s                                      # Use default values\n", program_name);
+    printf("  %s -o my_tables.h                       # Custom output file\n", program_name);
+    printf("  %s --flush-weight 600 --straight-weight 250  # Custom weights\n", program_name);
+}
+
+// Helper function to calculate the probability of completing a draw
+// This function is moved here to break the circular dependency
+double get_card_draw_probability(int outs, int known_cards_count) {
+    if (outs <= 0) return 0.0;
+
+    int remaining_in_deck = 52 - known_cards_count;
+
+    if (outs > remaining_in_deck) outs = remaining_in_deck;
+    if (outs <= 0) return 0.0;
+
+    if (known_cards_count == 5) { // Flop
+        if (remaining_in_deck >= 2) {
+            double p_miss_turn = (double)(remaining_in_deck - outs) / remaining_in_deck;
+            double p_miss_river_given_miss_turn = (double)((remaining_in_deck - 1) - outs) / (remaining_in_deck - 1);
+            return 1.0 - (p_miss_turn * p_miss_river_given_miss_turn);
+        } else if (remaining_in_deck == 1) {
+             return (double)outs / remaining_in_deck;
+        }
+    } else if (known_cards_count == 6) { // Turn
+        if (remaining_in_deck >= 1) {
+            return (double)outs / remaining_in_deck;
+        }
+    }
+    return 0.0;
 }
