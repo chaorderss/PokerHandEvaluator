@@ -18,7 +18,9 @@ option(BUILD_PLO6 "Build PLO6 library" ON)
 option(BUILD_TESTS "Build test ON/OFF" ON)
 option(BUILD_EXAMPLES "Build examples ON/OFF" ON)
 
-# Create the lookup table generator as a separate executable
+# ==============================================================================
+# == Lookup Table Generator for Hold'em Potential
+# ==============================================================================
 add_executable(generate_potential_tables
   src/generate_potential_tables.c
   src/evaluator5.c
@@ -33,6 +35,18 @@ add_executable(generate_potential_tables
   src/hash.c
   src/7462.c
 )
+
+# Remove phev-core dependency - not needed for standalone generator
+
+# Add OpenMP flags for the generator
+find_package(OpenMP)
+if(OpenMP_FOUND)
+    message(STATUS "OpenMP found, enabling parallel build for LUT generator.")
+    target_link_libraries(generate_potential_tables PRIVATE OpenMP::OpenMP_C)
+else()
+    message(WARNING "OpenMP not found. LUT generator will be built in single-thread mode.")
+endif()
+
 target_include_directories(generate_potential_tables PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_compile_options(generate_potential_tables PRIVATE -O3)

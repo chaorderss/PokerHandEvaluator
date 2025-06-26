@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
+#include <omp.h>
 #include "../include/phevaluator/phevaluator.h"
 #include "../include/phevaluator/evaluator_holdem_potential.h"
 #include "../include/phevaluator/strength_lut.h"
@@ -442,26 +443,28 @@ int main(int argc, char** argv) {
 }
 
 void generate_flop_multidimensional_lut(FILE* fp) {
-    printf("Generating flop multidimensional lookup table (169x1755)...\n");
-    fprintf(fp, "static const holdem_evaluation_t flop_multidimensional_lut[169][1755] = {\n");
+    printf("Generating flop multidimensional lookup table (169x1755) using multi-threading...\n");
 
+    // 1. 在内存中分配空间来存储结果
+    holdem_evaluation_t (*results)[1755] = malloc(sizeof(holdem_evaluation_t[169][1755]));
+    if (!results) {
+        fprintf(stderr, "Error: Failed to allocate memory for flop LUT results.\n");
+        return;
+    }
+
+    // 2. 使用OpenMP并行计算
+    #pragma omp parallel for schedule(dynamic)
     for (int hole_idx = 0; hole_idx < 169; hole_idx++) {
-        fprintf(fp, "  { // hole_index = %d\n", hole_idx);
-        if (hole_idx > 0 && hole_idx % 5 == 0) {
+        if (omp_get_thread_num() == 0 && hole_idx > 0 && hole_idx % 5 == 0) {
             printf("  ... Flop LUT progress: %d / 169\n", hole_idx);
         }
 
         for (int board_idx = 0; board_idx < 1755; board_idx++) {
             int used_cards[52] = {0};
             int hand[5];
-
             index_to_hole_cards(hole_idx, &hand[0], &hand[1]);
             used_cards[hand[0]] = 1;
             used_cards[hand[1]] = 1;
-
-            // Use the board_idx to reconstruct a representative board
-            // This is a simplified reconstruction for LUT generation.
-            // A full implementation would map each of the 19,600 flops to one of the 1755 indices.
             generate_board_from_texture(board_idx, &hand[2], used_cards);
 
             holdem_evaluation_t eval;
@@ -473,35 +476,51 @@ void generate_flop_multidimensional_lut(FILE* fp) {
             if (eval.equity_vs_pair_sets > 10000) eval.equity_vs_pair_sets = 10000;
             if (eval.equity_vs_pair_sets < 0) eval.equity_vs_pair_sets = 0;
 
-            fprintf(fp, "{%d,%d},", eval.equity_vs_all, eval.equity_vs_pair_sets);
+            results[hole_idx][board_idx] = eval;
+        }
+    }
+
+    // 3. 由单个线程将所有结果写入文件
+    printf("All flop computations finished. Writing to file...\n");
+    fprintf(fp, "const holdem_evaluation_t flop_multidimensional_lut[169][1755] = {\n");
+    for (int hole_idx = 0; hole_idx < 169; hole_idx++) {
+        fprintf(fp, "  { // hole_index = %d\n", hole_idx);
+        for (int board_idx = 0; board_idx < 1755; board_idx++) {
+            fprintf(fp, "{%d,%d},", results[hole_idx][board_idx].equity_vs_all, results[hole_idx][board_idx].equity_vs_pair_sets);
             if (board_idx > 0 && board_idx % 16 == 15) fprintf(fp, "\n    ");
         }
         fprintf(fp, "\n  },\n");
     }
     fprintf(fp, "};\n\n");
+
+    // 4. 释放内存
+    free(results);
 }
 
 void generate_turn_multidimensional_lut(FILE* fp) {
-    printf("Generating turn multidimensional lookup table (169x1755x13)...\n");
-    fprintf(fp, "static const holdem_evaluation_t turn_multidimensional_lut[169][1755][13] = {\n");
+    printf("Generating turn multidimensional lookup table (169x1755x13) using multi-threading...\n");
 
+    // 1. 分配内存
+    holdem_evaluation_t (*results)[1755][13] = malloc(sizeof(holdem_evaluation_t[169][1755][13]));
+    if (!results) {
+        fprintf(stderr, "Error: Failed to allocate memory for turn LUT results.\n");
+        return;
+    }
+
+    // 2. OpenMP并行计算
+    #pragma omp parallel for schedule(dynamic)
     for (int hole_idx = 0; hole_idx < 169; hole_idx++) {
-        fprintf(fp, "  { // hole_index = %d\n", hole_idx);
-         if (hole_idx > 0 && hole_idx % 5 == 0) {
-            printf("  ... Turn LUT progress: %d / 169\n", hole_idx);
+        if (omp_get_thread_num() == 0 && hole_idx > 0 && hole_idx % 5 == 0) {
+           printf("  ... Turn LUT progress: %d / 169\n", hole_idx);
         }
 
         for (int board_idx = 0; board_idx < 1755; board_idx++) {
-            fprintf(fp, "    { // board_texture = %d\n", board_idx);
-
             for (int turn_rank = 0; turn_rank < 13; turn_rank++) {
                 int used_cards[52] = {0};
                 int hand[6];
-
                 index_to_hole_cards(hole_idx, &hand[0], &hand[1]);
                 used_cards[hand[0]] = 1;
                 used_cards[hand[1]] = 1;
-
                 generate_board_from_texture(board_idx, &hand[2], used_cards);
 
                 int turn_card = -1;
@@ -512,7 +531,7 @@ void generate_turn_multidimensional_lut(FILE* fp) {
                     }
                 }
                 if (turn_card == -1) {
-                    fprintf(fp, "{5000,5000},");
+                    results[hole_idx][board_idx][turn_rank] = (holdem_evaluation_t){5000, 5000};
                     continue;
                 }
                 hand[5] = turn_card;
@@ -526,18 +545,34 @@ void generate_turn_multidimensional_lut(FILE* fp) {
                 if (eval.equity_vs_pair_sets > 10000) eval.equity_vs_pair_sets = 10000;
                 if (eval.equity_vs_pair_sets < 0) eval.equity_vs_pair_sets = 0;
 
-                fprintf(fp, "{%d,%d},", eval.equity_vs_all, eval.equity_vs_pair_sets);
+                results[hole_idx][board_idx][turn_rank] = eval;
+            }
+        }
+    }
+
+    // 3. 写入文件
+    printf("All turn computations finished. Writing to file...\n");
+    fprintf(fp, "const holdem_evaluation_t turn_multidimensional_lut[169][1755][13] = {\n");
+    for (int hole_idx = 0; hole_idx < 169; hole_idx++) {
+        fprintf(fp, "  { // hole_index = %d\n", hole_idx);
+        for (int board_idx = 0; board_idx < 1755; board_idx++) {
+            fprintf(fp, "    { // board_texture = %d\n", board_idx);
+            for (int turn_rank = 0; turn_rank < 13; turn_rank++) {
+                fprintf(fp, "{%d,%d},", results[hole_idx][board_idx][turn_rank].equity_vs_all, results[hole_idx][board_idx][turn_rank].equity_vs_pair_sets);
             }
             fprintf(fp, "\n    },\n");
         }
         fprintf(fp, "  },\n");
     }
     fprintf(fp, "};\n\n");
+
+    // 4. 释放内存
+    free(results);
 }
 
 void generate_river_multidimensional_lut(FILE* fp) {
     printf("Generating river multidimensional lookup table...\n");
-    fprintf(fp, "static const int river_multidimensional_lut[7462] = {\n");
+    fprintf(fp, "const int river_multidimensional_lut[7462] = {\n");
 
     for (int rank = 1; rank <= 7462; rank++) {
         int equity = 10000 - (rank - 1) * 10000 / 7461;

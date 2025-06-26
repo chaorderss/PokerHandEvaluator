@@ -533,24 +533,22 @@ holdem_evaluation_t evaluate_holdem_multidimensional(int* cards, int card_count)
             result.equity_vs_pair_sets = 3000 + (hole_idx - 91) * 5;
         }
     } else if (card_count == 5) {
-        // Flop: 使用新的、精确的公共牌索引
+        // Flop: 使用规范化翻牌索引（1755种形态）
         int hole_idx = hole_to_index(cards[0], cards[1]);
-        int board_idx = board_to_texture_index(cards + 2, 3);
+        int board_idx = get_canonical_flop_index(cards[2], cards[3], cards[4]);
 
         if (hole_idx >= 0 && hole_idx < 169 && board_idx >= 0 && board_idx < 1755) {
             result = flop_multidimensional_lut[hole_idx][board_idx];
         }
     } else if (card_count == 6) {
-        // Turn: 使用花色同构改进的查找表
-        int precise_hole_idx = get_precise_hole_index(cards[0], cards[1], cards + 2, 4);
-        // 将精确索引(0-1325)映射回传统索引(0-168)以兼容现有查找表结构
-        int legacy_hole_idx = precise_hole_idx % 169;
-        int board_idx = board_to_texture_index(cards + 2, 3);
+        // Turn: 使用规范化翻牌索引 + 转牌牌面
+        int hole_idx = hole_to_index(cards[0], cards[1]);
+        int board_idx = get_canonical_flop_index(cards[2], cards[3], cards[4]);
         int turn_rank = (cards[5] / 4);
 
-        if (legacy_hole_idx >= 0 && legacy_hole_idx < 169 && board_idx >= 0 && board_idx < 169 &&
+        if (hole_idx >= 0 && hole_idx < 169 && board_idx >= 0 && board_idx < 1755 &&
             turn_rank >= 0 && turn_rank < 13) {
-            result = turn_multidimensional_lut[legacy_hole_idx][board_idx][turn_rank];
+            result = turn_multidimensional_lut[hole_idx][board_idx][turn_rank];
         }
     } else if (card_count == 7) {
         // River: 使用直接映射
