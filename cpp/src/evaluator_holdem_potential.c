@@ -17,6 +17,7 @@
 #include <stdlib.h>
 
 #include "tables.h"
+#include "../include/phevaluator/strength_lut.h"
 #include "../include/phevaluator/evaluator_holdem_potential.h"
 #include "../include/phevaluator/phevaluator.h"
 
@@ -57,7 +58,7 @@ extern int evaluate_7cards(int a, int b, int c, int d, int e, int f, int g);
 int evaluate_hand_from_cards_2_to_7(int* cards, int card_count);
 
 // Forward declaration
-static int get_hand_strength(int* cards, int card_count);
+static long long get_hand_strength(int* cards, int card_count);
 
 typedef struct {
     int outs[52];
@@ -81,13 +82,13 @@ static int get_stage(int card_count) {
 // Finds cards that improve the hand rank
 static OutCards find_improvement_outs(int* base_hand, int base_hand_count, int* deck, int deck_count) {
     OutCards result = {{0}, 0};
-    int current_strength = get_hand_strength(base_hand, base_hand_count);
+    long long current_strength = get_hand_strength(base_hand, base_hand_count);
     int temp_hand[8];
     memcpy(temp_hand, base_hand, base_hand_count * sizeof(int));
 
     for (int i = 0; i < deck_count; i++) {
         temp_hand[base_hand_count] = deck[i];
-        int new_strength = get_hand_strength(temp_hand, base_hand_count + 1);
+        long long new_strength = get_hand_strength(temp_hand, base_hand_count + 1);
         if (new_strength > current_strength) { // Higher strength is better
             result.outs[result.count++] = deck[i];
         }
@@ -261,7 +262,7 @@ long long evaluate_holdem_river_with_potential(int h1, int h2, int c1, int c2, i
     return get_hand_strength(cards, 7);
 }
 
-static int get_hand_strength(int* cards, int card_count)
+static long long get_hand_strength(int* cards, int card_count)
 {
     int rank;
     switch (card_count) {
@@ -275,8 +276,12 @@ static int get_hand_strength(int* cards, int card_count)
             rank = evaluate_7cards(cards[0], cards[1], cards[2], cards[3], cards[4], cards[5], cards[6]);
             break;
         default:
-            rank = -1; // Invalid card count
-            break;
+            return 500000;
     }
-    return rank;
+
+    if (rank > 0 && rank <= 7462) {
+        return hand_strength_lut[rank];
+    }
+
+    return 500000;
 }
