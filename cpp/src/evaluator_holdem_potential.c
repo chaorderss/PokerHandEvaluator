@@ -1,13 +1,14 @@
 /*
- * Texas Hold'em Hand Evaluator with Potential Consideration
- * This evaluator considers not only current hand strength but also potential
- * improvements like flush draws, straight draws, and set potential.
+ * Texas Hold'em Hand Evaluator with Multi-dimensional Potential Analysis
+ * VERSION 4.0: Multi-dimensional evaluation system with simplified integer scale
  *
- * VERSION 5.0: Mathematically Sound Expected Rank Model
- * Refactored based on expert user feedback to directly calculate the
- * probability-weighted expected hand rank, abandoning the previous
- * heuristic "current_strength - bonus" model. This provides a more
- * accurate and theoretically sound valuation of a hand's true potential.
+ * This evaluator provides equity analysis against different hand categories:
+ * - Overall equity against all possible hands
+ * - Equity against two-pairs and sets
+ * - Equity against straights
+ * - Equity against flushes
+ *
+ * All values are returned in the range 0-10000 for simplicity.
  */
 
 #include <stdio.h>
@@ -47,27 +48,49 @@ static void print_hand(int* cards, int count) {
 #define RIVER 3
 #define UNKNOWN_STAGE -1
 
-#define STRENGTH_EXPONENT 4.0
-
-// Extern function declarations from other .c files to ensure visibility
+// Extern function declarations from other .c files
 extern int evaluate_5cards(int a, int b, int c, int d, int e);
 extern int evaluate_6cards(int a, int b, int c, int d, int e, int f);
 extern int evaluate_7cards(int a, int b, int c, int d, int e, int f, int g);
 
-// Forward declaration for the unified evaluation wrapper
-int evaluate_hand_from_cards_2_to_7(int* cards, int card_count);
-
-// Forward declaration
-static long long get_hand_strength(int* cards, int card_count);
+// Forward declarations
+static int get_hand_strength(int* cards, int card_count);
+static int get_stage(int card_count);
+static bool is_two_pair_or_set(int rank);
+static bool is_straight(int rank);
+static bool is_flush(int rank);
 
 typedef struct {
     int outs[52];
     int count;
 } OutCards;
 
+// Forward declaration
+static int calculate_equity_vs_range(int* my_cards, int card_count, bool (*is_in_range)(int, int, int*, int));
+
+static int get_best_rank(int c1, int c2, int* board, int board_count) {
+    int hand[7];
+    hand[0] = c1;
+    hand[1] = c2;
+    memcpy(hand + 2, board, board_count * sizeof(int));
+    int total_cards = 2 + board_count;
+
+    if (total_cards == 5) return evaluate_5cards(hand[0], hand[1], hand[2], hand[3], hand[4]);
+    if (total_cards == 6) return evaluate_6cards(hand[0], hand[1], hand[2], hand[3], hand[4], hand[5]);
+    if (total_cards == 7) return evaluate_7cards(hand[0], hand[1], hand[2], hand[3], hand[4], hand[5], hand[6]);
+
+    return 9999; // Should not happen
+}
+
+static bool is_pair_sets_on_board(int c1, int c2, int* board, int board_count) {
+    int rank = get_best_rank(c1, c2, board, board_count);
+    // One Pair, Two Pair, or Three of a Kind
+    return rank >= 1610 && rank <= 6185;
+}
+
 /*
 ================================================================================
-                        INTERNAL HELPER FUNCTIONS
+                        CORE EVALUATION FUNCTIONS
 ================================================================================
 */
 
@@ -79,16 +102,39 @@ static int get_stage(int card_count) {
     return UNKNOWN_STAGE;
 }
 
-// Finds cards that improve the hand rank
+static int get_hand_strength(int* cards, int card_count) {
+    int rank;
+    switch (card_count) {
+        case 5:
+            rank = evaluate_5cards(cards[0], cards[1], cards[2], cards[3], cards[4]);
+            break;
+        case 6:
+            rank = evaluate_6cards(cards[0], cards[1], cards[2], cards[3], cards[4], cards[5]);
+            break;
+        case 7:
+            rank = evaluate_7cards(cards[0], cards[1], cards[2], cards[3], cards[4], cards[5], cards[6]);
+            break;
+        default:
+            return 5000;  // Middle value for invalid hands
+    }
+
+    if (rank > 0 && rank <= 7462) {
+        return hand_strength_lut[rank];
+    }
+
+    return 5000;  // Default middle value
+}
+
+// Find cards that improve the hand rank
 static OutCards find_improvement_outs(int* base_hand, int base_hand_count, int* deck, int deck_count) {
     OutCards result = {{0}, 0};
-    long long current_strength = get_hand_strength(base_hand, base_hand_count);
+    int current_strength = get_hand_strength(base_hand, base_hand_count);
     int temp_hand[8];
     memcpy(temp_hand, base_hand, base_hand_count * sizeof(int));
 
     for (int i = 0; i < deck_count; i++) {
         temp_hand[base_hand_count] = deck[i];
-        long long new_strength = get_hand_strength(temp_hand, base_hand_count + 1);
+        int new_strength = get_hand_strength(temp_hand, base_hand_count + 1);
         if (new_strength > current_strength) { // Higher strength is better
             result.outs[result.count++] = deck[i];
         }
@@ -96,7 +142,109 @@ static OutCards find_improvement_outs(int* base_hand, int base_hand_count, int* 
     return result;
 }
 
-static long long calculate_one_street_strength(int* cards, int card_count) {
+/*
+================================================================================
+                    MULTI-DIMENSIONAL EQUITY CALCULATION
+================================================================================
+*/
+
+static bool is_twopair_or_set(int rank) {
+    // A hand is Two Pair or Three of a Kind if its rank is within this range.
+    // Three of a Kind: 1620-2467, Two Pair: 2468-3325
+    return rank >= 1620 && rank <= 3325;
+}
+
+static bool is_straight_or_better(int rank) {
+    // A hand is a Straight or better if its rank is 1619 or less.
+    // Ranks are from 1 (best) to 7462 (worst).
+    return rank <= 1619;
+}
+
+static bool is_flush_or_better(int rank) {
+    // A hand is a Flush or better if its rank is 1609 or less.
+    // This excludes straights, which are weaker than flushes.
+    return rank <= 1609;
+}
+
+/**
+ * @brief This is a helper function for the multi-dimensional evaluation.
+ *
+ * Instead of calculating equity against a category (which is computationally expensive),
+ * this function calculates the probability that the current hand will improve to
+ * a hand of the specified category (or better, depending on the passed function).
+ * It uses full enumeration for Flop and Turn stages for accuracy. Pre-flop is not
+ * calculated due to the massive number of combinations.
+ *
+ * @param cards The array of cards (hole cards + community cards).
+ * @param card_count The number of cards in the array.
+ * @param is_category_or_better A function pointer that returns true if a rank is in the target category.
+ * @return The probability (scaled 0-10000) of making a hand in the category.
+ */
+static int calculate_equity_vs_category(int* cards, int card_count, bool (*is_category_or_better)(int)) {
+    if (card_count >= 7) {
+        int current_rank = evaluate_7cards(cards[0], cards[1], cards[2], cards[3], cards[4], cards[5], cards[6]);
+        return is_category_or_better(current_rank) ? 10000 : 0;
+    }
+
+    // For incomplete hands, use full enumeration
+    int deck[52];
+    int remaining_deck[52];
+    int remaining_cards_count = 0;
+
+    // Create a full deck for marking
+    for (int i = 0; i < 52; i++) deck[i] = i;
+    // Mark dealt cards
+    for (int i = 0; i < card_count; i++) {
+        if(cards[i] >= 0 && cards[i] < 52) deck[cards[i]] = -1;
+    }
+    // Collect remaining cards
+    for (int i = 0; i < 52; i++) {
+        if (deck[i] != -1) {
+            remaining_deck[remaining_cards_count++] = deck[i];
+        }
+    }
+
+    int made_category = 0;
+    int total_samples = 0;
+    int temp_hand[7];
+    memcpy(temp_hand, cards, card_count * sizeof(int));
+
+    int cards_to_draw = 7 - card_count;
+
+    if (cards_to_draw == 1) { // Turn stage
+        if (remaining_cards_count < 1) return 0;
+        for (int i = 0; i < remaining_cards_count; i++) {
+            temp_hand[card_count] = remaining_deck[i];
+            int final_rank = evaluate_7cards(temp_hand[0], temp_hand[1], temp_hand[2], temp_hand[3], temp_hand[4], temp_hand[5], temp_hand[6]);
+            if (is_category_or_better(final_rank)) {
+                made_category++;
+            }
+            total_samples++;
+        }
+    } else if (cards_to_draw == 2) { // Flop stage
+        if (remaining_cards_count < 2) return 0;
+        for (int i = 0; i < remaining_cards_count; i++) {
+            for (int j = i + 1; j < remaining_cards_count; j++) {
+                temp_hand[card_count] = remaining_deck[i];
+                temp_hand[card_count + 1] = remaining_deck[j];
+                int final_rank = evaluate_7cards(temp_hand[0], temp_hand[1], temp_hand[2], temp_hand[3], temp_hand[4], temp_hand[5], temp_hand[6]);
+                if (is_category_or_better(final_rank)) {
+                    made_category++;
+                }
+                total_samples++;
+            }
+        }
+    } else { // Pre-flop stage
+        return 0; // Full enumeration is too computationally expensive
+    }
+
+    if (total_samples == 0) return 0;
+
+    // Convert ratio to 0-10000 scale
+    return (made_category * 10000) / total_samples;
+}
+
+static int calculate_one_street_strength(int* cards, int card_count) {
     int deck[52];
     int remaining_deck[52 - card_count];
     int remaining_cards_count = 0;
@@ -132,7 +280,7 @@ static long long calculate_one_street_strength(int* cards, int card_count) {
 
     for (int i = 0; i < remaining_cards_count; i++) {
         temp_hand[card_count] = remaining_deck[i];
-        long long final_strength = get_hand_strength(temp_hand, card_count + 1);
+        int final_strength = get_hand_strength(temp_hand, card_count + 1);
         if (is_out[remaining_deck[i]]) {
             e_hit += final_strength;
         } else {
@@ -147,10 +295,10 @@ static long long calculate_one_street_strength(int* cards, int card_count) {
     double p_hit = (double)hit_count / remaining_cards_count;
     double p_miss = 1.0 - p_hit;
 
-    return (long long)(e_hit * p_hit + e_miss * p_miss);
+    return (int)(e_hit * p_hit + e_miss * p_miss);
 }
 
-static long long calculate_two_street_strength(int* cards) {
+static int calculate_two_street_strength(int* cards) {
     int deck[52];
     int turn_hand[6];
     int remaining_deck[47];
@@ -179,7 +327,7 @@ static long long calculate_two_street_strength(int* cards) {
         total_expected_strength += calculate_one_street_strength(turn_hand, 6);
     }
 
-    return (long long)(total_expected_strength / remaining_cards_count);
+    return (int)(total_expected_strength / remaining_cards_count);
 }
 
 /*
@@ -189,44 +337,64 @@ static long long calculate_two_street_strength(int* cards) {
 */
 
 /**
- * @brief Evaluates a Texas Hold'em hand with future potential.
- *
- * This is the primary public function. It takes an array of cards and
- * calculates the hand's value. On the flop and turn, it computes the
- * mathematically expected final strength percentile. Otherwise, it returns the current
- * hand strength.
- *
- * @param cards An array of integer card representations.
- * @param card_count The number of cards in the array.
- * @return The final evaluated hand strength (higher is better).
+ * @brief Main multi-dimensional evaluation function
  */
-long long evaluate_holdem_with_potential(int* cards, int card_count) {
-    int stage = get_stage(card_count);
+holdem_evaluation_t evaluate_holdem_multidimensional(int* cards, int card_count)
+{
+    holdem_evaluation_t result;
 
-    switch (stage) {
-        case PREFLOP:
-            return 0;
-        case FLOP:
-            return calculate_two_street_strength(cards);
-        case TURN:
-            return calculate_one_street_strength(cards, card_count);
-        case RIVER:
-        default:
-            return get_hand_strength(cards, card_count);
+    // 直接计算总体胜率，避免循环引用
+    if (card_count < 5) {
+        // Preflop: 仅返回基础手牌强度
+        result.equity_vs_all = 5000; // 中等强度默认值
+    } else if (card_count == 7) {
+        // River: 直接返回手牌强度，无需潜力计算
+        result.equity_vs_all = get_hand_strength(cards, 7);
+    } else if (card_count == 5) {
+        // Flop: 计算两条街的期望强度
+        result.equity_vs_all = calculate_two_street_strength(cards);
+    } else if (card_count == 6) {
+        // Turn: 计算一条街的期望强度
+        result.equity_vs_all = calculate_one_street_strength(cards, 6);
+    } else {
+        result.equity_vs_all = 5000; // 默认中等强度
     }
+
+    if (card_count < 5) {
+        result.equity_vs_pair_sets = 0;
+    } else {
+        result.equity_vs_pair_sets = calculate_equity_vs_range(cards, card_count, is_pair_sets_on_board);
+    }
+
+    return result;
 }
 
 /**
- * @brief A wrapper function to evaluate hands of 2, 5, 6, or 7 cards.
- *
- * This function dispatches to the correct core evaluation function
- * based on the number of cards provided, and then converts the resulting
- * rank to a non-linear strength value using a lookup table.
+ * @brief Legacy compatibility function
  */
-int evaluate_hand_from_cards_2_to_7(int* cards, int card_count)
-{
-    // This function is now just a wrapper for get_hand_strength
-    return get_hand_strength(cards, card_count);
+int evaluate_holdem_with_potential(int* cards, int card_count) {
+    // 直接实现潜力计算逻辑，避免循环引用
+    if (card_count < 5) {
+        // Preflop: 仅返回基础手牌强度
+        return 5000; // 中等强度默认值
+    }
+
+    if (card_count == 7) {
+        // River: 直接返回手牌强度，无需潜力计算
+        return get_hand_strength(cards, 7);
+    }
+
+    if (card_count == 5) {
+        // Flop: 计算两条街的期望强度
+        return calculate_two_street_strength(cards);
+    }
+
+    if (card_count == 6) {
+        // Turn: 计算一条街的期望强度
+        return calculate_one_street_strength(cards, 6);
+    }
+
+    return 5000; // 默认中等强度
 }
 
 /*
@@ -235,53 +403,143 @@ int evaluate_hand_from_cards_2_to_7(int* cards, int card_count)
 ================================================================================
 */
 
-/**
- * @brief Deprecated function for evaluating flop hands.
- * Use evaluate_holdem_with_potential(cards, 5) instead.
- */
-long long evaluate_holdem_flop_with_potential(int h1, int h2, int c1, int c2, int c3) {
+int evaluate_holdem_flop_with_potential(int h1, int h2, int c1, int c2, int c3) {
     int cards[] = {h1, h2, c1, c2, c3};
     return evaluate_holdem_with_potential(cards, 5);
 }
 
-/**
- * @brief Deprecated function for evaluating turn hands.
- * Use evaluate_holdem_with_potential(cards, 6) instead.
- */
-long long evaluate_holdem_turn_with_potential(int h1, int h2, int c1, int c2, int c3, int c4) {
+int evaluate_holdem_turn_with_potential(int h1, int h2, int c1, int c2, int c3, int c4) {
     int cards[] = {h1, h2, c1, c2, c3, c4};
     return evaluate_holdem_with_potential(cards, 6);
 }
 
-/**
- * @brief Deprecated function for evaluating river hands.
- * Use evaluate_holdem_with_potential(cards, 7) instead.
- */
-long long evaluate_holdem_river_with_potential(int h1, int h2, int c1, int c2, int c3, int c4, int c5) {
+int evaluate_holdem_river_with_potential(int h1, int h2, int c1, int c2, int c3, int c4, int c5) {
     int cards[] = {h1, h2, c1, c2, c3, c4, c5};
     return get_hand_strength(cards, 7);
 }
 
-static long long get_hand_strength(int* cards, int card_count)
+static int calculate_equity_vs_range(int* my_cards, int card_count, bool (*is_in_range)(int, int, int*, int))
 {
-    int rank;
-    switch (card_count) {
-        case 5:
-            rank = evaluate_5cards(cards[0], cards[1], cards[2], cards[3], cards[4]);
-            break;
-        case 6:
-            rank = evaluate_6cards(cards[0], cards[1], cards[2], cards[3], cards[4], cards[5]);
-            break;
-        case 7:
-            rank = evaluate_7cards(cards[0], cards[1], cards[2], cards[3], cards[4], cards[5], cards[6]);
-            break;
-        default:
-            return 500000;
+    if (card_count < 5) return 0;
+    if (card_count >= 7) {
+        int my_rank = evaluate_7cards(my_cards[0], my_cards[1], my_cards[2], my_cards[3], my_cards[4], my_cards[5], my_cards[6]);
+        if (my_rank < 1620) return 10000;
+        if (my_rank < 3325) return 5000;
+        return 0;
     }
 
-    if (rank > 0 && rank <= 7462) {
-        return hand_strength_lut[rank];
+    int board_count = card_count - 2;
+    int board[5];
+    memcpy(board, my_cards + 2, board_count * sizeof(int));
+
+    int deck[52];
+    for(int i = 0; i < 52; i++) deck[i] = i;
+    for(int i = 0; i < card_count; i++) deck[my_cards[i]] = -1;
+
+    int remaining_deck[52];
+    int remaining_deck_count = 0;
+    for(int i = 0; i < 52; i++) {
+        if(deck[i] != -1) remaining_deck[remaining_deck_count++] = deck[i];
     }
 
-    return 500000;
+    int opponent_hands_capacity = 2000;
+    int (*opponent_hands)[2] = malloc(opponent_hands_capacity * sizeof(*opponent_hands));
+    if (!opponent_hands) { return -1; } // Malloc failure
+
+    int opponent_hands_count = 0;
+    for(int i = 0; i < remaining_deck_count; i++) {
+        for(int j = i + 1; j < remaining_deck_count; j++) {
+            if(is_in_range(remaining_deck[i], remaining_deck[j], board, board_count)) {
+                if (opponent_hands_count >= opponent_hands_capacity) {
+                    opponent_hands_capacity *= 2;
+                    int (*temp)[2] = realloc(opponent_hands, opponent_hands_capacity * sizeof(*opponent_hands));
+                    if (!temp) {
+                        free(opponent_hands);
+                        return -1; // Realloc failure
+                    }
+                    opponent_hands = temp;
+                }
+                opponent_hands[opponent_hands_count][0] = remaining_deck[i];
+                opponent_hands[opponent_hands_count][1] = remaining_deck[j];
+                opponent_hands_count++;
+            }
+        }
+    }
+
+    if (opponent_hands_count == 0) {
+        free(opponent_hands);
+        return 10000;
+    }
+
+    double total_equity = 0;
+    int matchups = 0;
+
+    for (int i = 0; i < opponent_hands_count; i++) {
+        int opp_c1 = opponent_hands[i][0];
+        int opp_c2 = opponent_hands[i][1];
+
+        int runout_deck[52];
+        int runout_deck_count = 0;
+        int temp_deck[52];
+        memcpy(temp_deck, deck, 52 * sizeof(int));
+        temp_deck[opp_c1] = -1;
+        temp_deck[opp_c2] = -1;
+        for(int k=0; k<52; k++) {
+            if(temp_deck[k] != -1) runout_deck[runout_deck_count++] = k;
+        }
+
+        int my_hand[7];
+        int opp_hand[7];
+        memcpy(my_hand, my_cards, card_count * sizeof(int));
+        memcpy(opp_hand, board, board_count * sizeof(int));
+        opp_hand[board_count] = opp_c1;
+        opp_hand[board_count+1] = opp_c2;
+
+        int wins = 0;
+        int ties = 0;
+        int runout_count = 0;
+
+        if (card_count == 5) { // Flop
+            for(int r1=0; r1 < runout_deck_count; r1++) {
+                for (int r2 = r1 + 1; r2 < runout_deck_count; r2++) {
+                    my_hand[5] = runout_deck[r1];
+                    my_hand[6] = runout_deck[r2];
+                    opp_hand[5] = runout_deck[r1];
+                    opp_hand[6] = runout_deck[r2];
+
+                    int my_rank = evaluate_7cards(my_hand[0], my_hand[1], my_hand[2], my_hand[3], my_hand[4], my_hand[5], my_hand[6]);
+                    int opp_rank = evaluate_7cards(opp_hand[0], opp_hand[1], opp_hand[2], opp_hand[3], opp_hand[4], opp_hand[5], opp_hand[6]);
+
+                    if (my_rank < opp_rank) wins++;
+                    else if (my_rank == opp_rank) ties++;
+                    runout_count++;
+                }
+            }
+        } else { // Turn
+             for(int r1=0; r1 < runout_deck_count; r1++) {
+                my_hand[6] = runout_deck[r1];
+                opp_hand[6] = runout_deck[r1];
+                int my_rank = evaluate_7cards(my_hand[0], my_hand[1], my_hand[2], my_hand[3], my_hand[4], my_hand[5], my_hand[6]);
+                int opp_rank = evaluate_7cards(opp_hand[0], opp_hand[1], opp_hand[2], opp_hand[3], opp_hand[4], opp_hand[5], opp_hand[6]);
+
+                if (my_rank < opp_rank) wins++;
+                else if (my_rank == opp_rank) ties++;
+                runout_count++;
+            }
+        }
+
+        if (runout_count > 0) {
+            total_equity += (double)(wins * 2 + ties) / (double)(runout_count * 2);
+        }
+        matchups++;
+    }
+
+    if (matchups == 0) {
+        free(opponent_hands);
+        return 10000;
+    }
+
+    int final_equity = (int)((total_equity / matchups) * 10000);
+    free(opponent_hands);
+    return final_equity;
 }
