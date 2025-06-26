@@ -24,6 +24,46 @@ typedef struct {
     int equity_vs_pair_sets;     // Equity specifically against one-pair, two-pairs, and sets (0-10000)
 } holdem_evaluation_t;
 
+// Lookup table size definitions
+#define HOLE_COMBINATIONS 1326      // C(52, 2) = 1326 possible hole card combinations
+#define FLOP_COMBINATIONS 19600     // C(50, 3) = 19600 possible flop combinations
+#define TURN_COMBINATIONS 47        // C(47, 1) = 47 possible turn cards
+#define RIVER_COMBINATIONS 46       // C(46, 1) = 46 possible river cards
+
+// Compact index calculation functions
+/**
+ * @brief Calculate index for hole card combination
+ * @param c1 First hole card (0-51)
+ * @param c2 Second hole card (0-51)
+ * @return Index in range [0, 1325]
+ */
+int get_hole_index(int c1, int c2);
+
+/**
+ * @brief Calculate index for flop combination
+ * @param c1 First flop card (0-51, excluding hole cards)
+ * @param c2 Second flop card (0-51, excluding hole cards and c1)
+ * @param c3 Third flop card (0-51, excluding hole cards, c1, and c2)
+ * @return Index in range [0, 19599]
+ */
+int get_flop_index(int c1, int c2, int c3);
+
+/**
+ * @brief Calculate index for turn card
+ * @param turn_card Turn card (0-51, excluding hole cards and flop cards)
+ * @param known_cards Bitmask of already dealt cards
+ * @return Index in range [0, 46]
+ */
+int get_turn_index(int turn_card, unsigned long long known_cards);
+
+/**
+ * @brief Calculate index for river card
+ * @param river_card River card (0-51, excluding all previous cards)
+ * @param known_cards Bitmask of already dealt cards
+ * @return Index in range [0, 45]
+ */
+int get_river_index(int river_card, unsigned long long known_cards);
+
 /**
  * @brief Evaluates a Texas Hold'em hand with multi-dimensional analysis.
  *

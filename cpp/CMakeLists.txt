@@ -18,6 +18,33 @@ option(BUILD_PLO6 "Build PLO6 library" ON)
 option(BUILD_TESTS "Build test ON/OFF" ON)
 option(BUILD_EXAMPLES "Build examples ON/OFF" ON)
 
+# Create the lookup table generator as a separate executable
+add_executable(generate_potential_tables
+  src/generate_potential_tables.c
+  src/evaluator5.c
+  src/evaluator6.c
+  src/evaluator7.c
+  src/dptables.c
+  src/tables_bitwise.c
+  src/hashtable5.c
+  src/hashtable6.c
+  src/hashtable7.c
+  src/hashtable.c
+  src/hash.c
+  src/7462.c
+)
+target_include_directories(generate_potential_tables PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_compile_options(generate_potential_tables PRIVATE -O3)
+
+# Generate the lookup tables at build time
+add_custom_command(
+  OUTPUT ${CMAKE_CURRENT_SOURCE_DIR}/src/evaluator_holdem_potential_tables.h
+  COMMAND generate_potential_tables -o ${CMAKE_CURRENT_SOURCE_DIR}/src/evaluator_holdem_potential_tables.h
+  DEPENDS generate_potential_tables
+  COMMENT "Generating holdem potential lookup tables"
+)
+
 add_library(pheval STATIC
   src/card_sampler.cc
   src/dptables.c
@@ -37,6 +64,7 @@ add_library(pheval STATIC
   src/7462.c
   src/evaluator_extended.c
   src/evaluator_holdem_potential.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/evaluator_holdem_potential_tables.h
 )
 target_include_directories(pheval PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -329,6 +357,11 @@ if (BUILD_EXAMPLES)
   )
   target_link_libraries(cpp_example pheval)
 
+  add_executable(test_lookup_tables
+    test_lookup_tables.c
+  )
+  target_link_libraries(test_lookup_tables pheval)
+
   if (BUILD_CARD5)
     add_executable(evaluator5_standalone_example
       examples/evaluator5_standalone_example.cc
@@ -432,3 +465,5 @@ if (UNIX)
           "${CMAKE_CURRENT_BINARY_DIR}/phevaluatorConfigVersion.cmake"
           DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/phevaluator")
 endif()
+add_executable(usage_example usage_example.c)
+target_link_libraries(usage_example pheval)

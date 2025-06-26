@@ -21,7 +21,6 @@
 #include "../include/phevaluator/strength_lut.h"
 #include "../include/phevaluator/evaluator_holdem_potential.h"
 #include "../include/phevaluator/phevaluator.h"
-#include "evaluator_holdem_potential_tables.h"  // Include generated lookup tables
 
 // Helper functions for debugging
 static const char* debug_ranks[] = {"2", "3", "4", "5", "6", "7", "8", "9", "T", "J", "Q", "K", "A"};
@@ -331,177 +330,71 @@ static int calculate_two_street_strength(int* cards) {
     return (int)(total_expected_strength / remaining_cards_count);
 }
 
-// Helper function to convert hole cards to index (0-168)
-static int hole_to_index(int c1, int c2) {
-    if (c1 > c2) { int temp = c1; c1 = c2; c2 = temp; }
-    int r1 = c1 / 4, r2 = c2 / 4;
-    int s1 = c1 % 4, s2 = c2 % 4;
-
-    if (r1 == r2) { // Pocket pair
-        return r1; // 0-12 (13种)
-    } else {
-        // Ensure r1 < r2 for consistency
-        if (r1 > r2) { int temp = r1; r1 = r2; r2 = temp; }
-
-        if (s1 == s2) { // Suited
-            // 13 + combination index for suited hands
-            // For each higher rank r2, there are r2 possible lower ranks r1
-            return 13 + (r2 * (r2 - 1)) / 2 + r1;
-        } else { // Offsuit
-            // 13 + 78 (suited) + combination index for offsuit hands
-            return 91 + (r2 * (r2 - 1)) / 2 + r1;
-        }
-    }
-}
-
-// Helper function to convert board to texture index
-static int board_to_texture_index(int* board, int board_count) {
-    if (board_count < 3) return 0;
-
-    // Extract ranks and suits
-    int ranks[13] = {0};
-    int suits[4] = {0};
-    unsigned int rank_mask = 0;
-
-    for (int i = 0; i < board_count; i++) {
-        int rank = board[i] / 4;
-        int suit = board[i] % 4;
-        ranks[rank]++;
-        suits[suit]++;
-        rank_mask |= (1U << rank);
-    }
-
-    // Calculate texture features
-    int texture = 0;
-
-    // Pair/trips on board (0-2)
-    int max_rank_count = 0;
-    for (int i = 0; i < 13; i++) {
-        if (ranks[i] > max_rank_count) max_rank_count = ranks[i];
-    }
-    texture += (max_rank_count - 1) * 50;  // 0, 50, 100
-
-    // Flush draw (0-1)
-    int max_suit_count = 0;
-    for (int i = 0; i < 4; i++) {
-        if (suits[i] > max_suit_count) max_suit_count = suits[i];
-    }
-    if (max_suit_count >= 3) texture += 25;
-
-    // Straight possibilities (0-2)
-    int straight_level = 0;
-    for (int high = 12; high >= 3; high--) {
-        unsigned int straight_mask = (high == 3) ? 0x100F : (((1U << 5) - 1) << (high - 4));
-        int hits = 0;
-        unsigned int temp_mask = rank_mask & straight_mask;
-        while (temp_mask) {
-            hits += temp_mask & 1;
-            temp_mask >>= 1;
-        }
-        if (hits >= 4) { straight_level = 2; break; }
-        else if (hits >= 3 && straight_level < 1) straight_level = 1;
-    }
-    texture += straight_level * 12;
-
-    // High card level (0-12)
-    int high_card = 0;
-    for (int i = 12; i >= 0; i--) {
-        if (rank_mask & (1U << i)) { high_card = i; break; }
-    }
-    texture += high_card;
-
-    return texture % 169;  // Compress to 0-168
-}
-
-/**
- * @brief Main multi-dimensional evaluation function using lookup tables
- */
-holdem_evaluation_t evaluate_holdem_multidimensional(int* cards, int card_count)
-{
-    holdem_evaluation_t result = {5000, 5000}; // Default values
-
-    if (card_count < 5) {
-        // Preflop: 使用简单的手牌强度评估
-        int hole_idx = hole_to_index(cards[0], cards[1]);
-        if (hole_idx < 13) { // Pocket pairs
-            result.equity_vs_all = 6000 + hole_idx * 200;
-            result.equity_vs_pair_sets = 5500 + hole_idx * 150;
-        } else if (hole_idx < 91) { // Suited hands
-            result.equity_vs_all = 4500 + (hole_idx - 13) * 15;
-            result.equity_vs_pair_sets = 4000 + (hole_idx - 13) * 10;
-        } else { // Offsuit hands
-            result.equity_vs_all = 3500 + (hole_idx - 91) * 10;
-            result.equity_vs_pair_sets = 3000 + (hole_idx - 91) * 5;
-        }
-    } else if (card_count == 5) {
-        // Flop: 使用查找表
-        int hole_idx = hole_to_index(cards[0], cards[1]);
-        int board_idx = board_to_texture_index(cards + 2, 3);
-
-        if (hole_idx >= 0 && hole_idx < 169 && board_idx >= 0 && board_idx < 169) {
-            result = flop_multidimensional_lut[hole_idx][board_idx];
-        }
-    } else if (card_count == 6) {
-        // Turn: 使用查找表
-        int hole_idx = hole_to_index(cards[0], cards[1]);
-        int board_idx = board_to_texture_index(cards + 2, 3);
-        int turn_rank = (cards[5] / 4);
-
-        if (hole_idx >= 0 && hole_idx < 169 && board_idx >= 0 && board_idx < 169 &&
-            turn_rank >= 0 && turn_rank < 13) {
-            result = turn_multidimensional_lut[hole_idx][board_idx][turn_rank];
-        }
-    } else if (card_count == 7) {
-        // River: 使用直接映射
-        int hand_rank = evaluate_7cards(cards[0], cards[1], cards[2], cards[3], cards[4], cards[5], cards[6]);
-        if (hand_rank >= 1 && hand_rank <= 7462) {
-            result.equity_vs_all = river_multidimensional_lut[hand_rank - 1];
-            // For river, equity_vs_pair_sets is similar to equity_vs_all
-            result.equity_vs_pair_sets = result.equity_vs_all;
-        }
-    }
-
-    // Ensure values are within valid range
-    if (result.equity_vs_all < 0) result.equity_vs_all = 0;
-    if (result.equity_vs_all > 10000) result.equity_vs_all = 10000;
-    if (result.equity_vs_pair_sets < 0) result.equity_vs_pair_sets = 0;
-    if (result.equity_vs_pair_sets > 10000) result.equity_vs_pair_sets = 10000;
-
-    return result;
-}
-
-/**
- * @brief Legacy compatibility function using lookup tables
- */
-int evaluate_holdem_with_potential(int* cards, int card_count) {
-    holdem_evaluation_t result = evaluate_holdem_multidimensional(cards, card_count);
-    return result.equity_vs_all;
-}
-
 /*
 ================================================================================
                         PUBLIC API FUNCTIONS
 ================================================================================
 */
 
-// Helper function implementations for the header file declarations
-int get_hole_index(int c1, int c2) {
-    return hole_to_index(c1, c2);
+/**
+ * @brief Main multi-dimensional evaluation function
+ */
+holdem_evaluation_t evaluate_holdem_multidimensional(int* cards, int card_count)
+{
+    holdem_evaluation_t result;
+
+    // 直接计算总体胜率，避免循环引用
+    if (card_count < 5) {
+        // Preflop: 仅返回基础手牌强度
+        result.equity_vs_all = 5000; // 中等强度默认值
+    } else if (card_count == 7) {
+        // River: 直接返回手牌强度，无需潜力计算
+        result.equity_vs_all = get_hand_strength(cards, 7);
+    } else if (card_count == 5) {
+        // Flop: 计算两条街的期望强度
+        result.equity_vs_all = calculate_two_street_strength(cards);
+    } else if (card_count == 6) {
+        // Turn: 计算一条街的期望强度
+        result.equity_vs_all = calculate_one_street_strength(cards, 6);
+    } else {
+        result.equity_vs_all = 5000; // 默认中等强度
+    }
+
+    if (card_count < 5) {
+        result.equity_vs_pair_sets = 0;
+    } else {
+        result.equity_vs_pair_sets = calculate_equity_vs_range(cards, card_count, is_pair_sets_on_board);
+    }
+
+    return result;
 }
 
-int get_flop_index(int c1, int c2, int c3) {
-    int cards[3] = {c1, c2, c3};
-    return board_to_texture_index(cards, 3);
-}
+/**
+ * @brief Legacy compatibility function
+ */
+int evaluate_holdem_with_potential(int* cards, int card_count) {
+    // 直接实现潜力计算逻辑，避免循环引用
+    if (card_count < 5) {
+        // Preflop: 仅返回基础手牌强度
+        return 5000; // 中等强度默认值
+    }
 
-int get_turn_index(int turn_card, unsigned long long known_cards) {
-    // Simplified: just return turn card rank
-    return (turn_card / 4) % 47;
-}
+    if (card_count == 7) {
+        // River: 直接返回手牌强度，无需潜力计算
+        return get_hand_strength(cards, 7);
+    }
 
-int get_river_index(int river_card, unsigned long long known_cards) {
-    // Simplified: just return river card rank
-    return (river_card / 4) % 46;
+    if (card_count == 5) {
+        // Flop: 计算两条街的期望强度
+        return calculate_two_street_strength(cards);
+    }
+
+    if (card_count == 6) {
+        // Turn: 计算一条街的期望强度
+        return calculate_one_street_strength(cards, 6);
+    }
+
+    return 5000; // 默认中等强度
 }
 
 /*
