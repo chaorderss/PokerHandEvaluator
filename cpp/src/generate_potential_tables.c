@@ -9,9 +9,74 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdbool.h>
 #include "../include/phevaluator/phevaluator.h"
 #include "../include/phevaluator/evaluator_holdem_potential.h"
 #include "../include/phevaluator/strength_lut.h"
+
+// PHEvaluator functions
+extern int evaluate_5cards(int a, int b, int c, int d, int e);
+extern int evaluate_6cards(int a, int b, int c, int d, int e, int f);
+extern int evaluate_7cards(int a, int b, int c, int d, int e, int f, int g);
+
+#include "tables.h"
+
+// === 花色同构算法 (从 evaluator_holdem_potential.c 复制) ===
+typedef struct {
+    int original_suit;
+    int count;
+    int rank_mask;
+} SuitInfo;
+static int suit_info_compare(const void* a, const void* b) {
+    const SuitInfo* sa = (const SuitInfo*)a;
+    const SuitInfo* sb = (const SuitInfo*)b;
+    if (sa->count != sb->count) return sb->count - sa->count;
+    if (sa->rank_mask != sb->rank_mask) return sb->rank_mask - sa->rank_mask;
+    return sa->original_suit - sb->original_suit;
+}
+static void get_canonical_suit_map(int* community_cards, int board_count, int* canonical_suit_map) {
+    SuitInfo suit_infos[4] = {{0, 0, 0}, {1, 0, 0}, {2, 0, 0}, {3, 0, 0}};
+    for (int i = 0; i < board_count; i++) {
+        int suit = community_cards[i] & 3;
+        int rank = community_cards[i] >> 2;
+        suit_infos[suit].count++;
+        suit_infos[suit].rank_mask |= (1 << rank);
+    }
+    qsort(suit_infos, 4, sizeof(SuitInfo), suit_info_compare);
+    for (int i = 0; i < 4; i++) {
+        canonical_suit_map[suit_infos[i].original_suit] = i;
+    }
+}
+static int compare_cards(const void* a, const void* b) {
+    return *(int*)b - *(int*)a;
+}
+static int get_canonical_flop_index(int c1, int c2, int c3) {
+    int board[3] = {c1, c2, c3};
+    int ranks[3];
+    int suits[3];
+    int canonical_suit_map[4];
+    get_canonical_suit_map(board, 3, canonical_suit_map);
+    for (int i=0; i<3; ++i) {
+        int original_suit = board[i] & 3;
+        int rank = board[i] >> 2;
+        suits[i] = canonical_suit_map[original_suit];
+        ranks[i] = rank;
+    }
+    qsort(ranks, 3, sizeof(int), compare_cards);
+    int suit_pattern;
+    if (suits[0] == suits[1] && suits[1] == suits[2]) suit_pattern = 3;
+    else if (suits[0] == suits[1] || suits[0] == suits[2] || suits[1] == suits[2]) suit_pattern = 2;
+    else suit_pattern = 1;
+    int rank_pattern;
+    if (ranks[0] == ranks[1] && ranks[1] == ranks[2]) rank_pattern = 3;
+    else if (ranks[0] == ranks[1] || ranks[1] == ranks[2]) rank_pattern = 2;
+    else rank_pattern = 1;
+    int rank_combo_index = (ranks[0] * (ranks[0]-1) * (ranks[0]-2) / 6) +
+                           (ranks[1] * (ranks[1]-1) / 2) +
+                            ranks[2];
+    int final_index = (suit_pattern - 1) * 1000 + (rank_pattern - 1) * 300 + rank_combo_index;
+    return final_index % 1755;
+}
 
 // --- START: Core Evaluation Logic ---
 
@@ -377,8 +442,8 @@ int main(int argc, char** argv) {
 }
 
 void generate_flop_multidimensional_lut(FILE* fp) {
-    printf("Generating flop multidimensional lookup table (with REAL logic)...\n");
-    fprintf(fp, "static const holdem_evaluation_t flop_multidimensional_lut[169][169] = {\n");
+    printf("Generating flop multidimensional lookup table (169x1755)...\n");
+    fprintf(fp, "static const holdem_evaluation_t flop_multidimensional_lut[169][1755] = {\n");
 
     for (int hole_idx = 0; hole_idx < 169; hole_idx++) {
         fprintf(fp, "  { // hole_index = %d\n", hole_idx);
@@ -386,7 +451,7 @@ void generate_flop_multidimensional_lut(FILE* fp) {
             printf("  ... Flop LUT progress: %d / 169\n", hole_idx);
         }
 
-        for (int board_idx = 0; board_idx < 169; board_idx++) {
+        for (int board_idx = 0; board_idx < 1755; board_idx++) {
             int used_cards[52] = {0};
             int hand[5];
 
@@ -394,6 +459,9 @@ void generate_flop_multidimensional_lut(FILE* fp) {
             used_cards[hand[0]] = 1;
             used_cards[hand[1]] = 1;
 
+            // Use the board_idx to reconstruct a representative board
+            // This is a simplified reconstruction for LUT generation.
+            // A full implementation would map each of the 19,600 flops to one of the 1755 indices.
             generate_board_from_texture(board_idx, &hand[2], used_cards);
 
             holdem_evaluation_t eval;
@@ -406,7 +474,7 @@ void generate_flop_multidimensional_lut(FILE* fp) {
             if (eval.equity_vs_pair_sets < 0) eval.equity_vs_pair_sets = 0;
 
             fprintf(fp, "{%d,%d},", eval.equity_vs_all, eval.equity_vs_pair_sets);
-            if (board_idx % 8 == 7) fprintf(fp, "\n    ");
+            if (board_idx > 0 && board_idx % 16 == 15) fprintf(fp, "\n    ");
         }
         fprintf(fp, "\n  },\n");
     }
@@ -414,8 +482,8 @@ void generate_flop_multidimensional_lut(FILE* fp) {
 }
 
 void generate_turn_multidimensional_lut(FILE* fp) {
-    printf("Generating turn multidimensional lookup table (with REAL logic)...\n");
-    fprintf(fp, "static const holdem_evaluation_t turn_multidimensional_lut[169][169][13] = {\n");
+    printf("Generating turn multidimensional lookup table (169x1755x13)...\n");
+    fprintf(fp, "static const holdem_evaluation_t turn_multidimensional_lut[169][1755][13] = {\n");
 
     for (int hole_idx = 0; hole_idx < 169; hole_idx++) {
         fprintf(fp, "  { // hole_index = %d\n", hole_idx);
@@ -423,7 +491,7 @@ void generate_turn_multidimensional_lut(FILE* fp) {
             printf("  ... Turn LUT progress: %d / 169\n", hole_idx);
         }
 
-        for (int board_idx = 0; board_idx < 169; board_idx++) {
+        for (int board_idx = 0; board_idx < 1755; board_idx++) {
             fprintf(fp, "    { // board_texture = %d\n", board_idx);
 
             for (int turn_rank = 0; turn_rank < 13; turn_rank++) {
