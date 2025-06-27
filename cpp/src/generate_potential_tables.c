@@ -45,7 +45,7 @@ static int suit_info_compare(const void* a, const void* b) {
 }
 
 // This function needs the canonical suit map helper
-static void get_canonical_suit_map(int* community_cards, int board_count, int* canonical_suit_map) {
+static void get_canonical_suit_map(const int* community_cards, int board_count, int* canonical_suit_map) {
      SuitInfo suit_infos[4];
      for (int i=0; i<4; ++i) suit_infos[i] = (SuitInfo){i, 0, 0};
      for (int i = 0; i < board_count; i++) {
@@ -484,13 +484,23 @@ int main(int argc, char** argv) {
 void generate_flop_multidimensional_lut(FILE* fp) {
     printf("Generating flop multidimensional LUT (1326x1755) using multi-threading...\n");
 
+    // 关键优化：使用细粒度锁代替全局critical section
+    const int num_locks = 4096;
+    omp_lock_t locks[num_locks];
+    for (int i = 0; i < num_locks; i++) {
+        omp_init_lock(&locks[i]);
+    }
+
     // 1. 在内存中分配空间来存储结果和完成状态
     holdem_evaluation_t (*results)[1755] = malloc(sizeof(holdem_evaluation_t[1326][1755]));
-    char (*done)[1755] = calloc(1326, 1755); // Use calloc to initialize to 0
+    char (*done)[1755] = calloc(1326, 1755 * sizeof(char)); // Use calloc to initialize to 0
     if (!results || !done) {
         fprintf(stderr, "Error: Failed to allocate memory for flop LUT results.\n");
         if (results) free(results);
         if (done) free(done);
+        for (int i = 0; i < num_locks; i++) {
+            omp_destroy_lock(&locks[i]);
+        }
         return;
     }
 
@@ -513,16 +523,24 @@ void generate_flop_multidimensional_lut(FILE* fp) {
 
                         int precise_hole_idx = get_precise_hole_index_c(h1, h2, board, 3);
 
-                        // 只计算一次
-                        if (done[precise_hole_idx][canonical_board_idx]) continue;
+                        // 只计算一次，并使用正确的OpenMP同步逻辑
+                        if (!done[precise_hole_idx][canonical_board_idx]) {
+                            // 使用细粒度锁来防止特定任务的重复计算，同时允许多个线程并行
+                            int lock_idx = (precise_hole_idx * 1755 + canonical_board_idx) % num_locks;
+                            omp_set_lock(&locks[lock_idx]);
 
-                        int hand[5] = {h1, h2, c1, c2, c3};
-                        holdem_evaluation_t eval;
-                        eval.equity_vs_all = calculate_two_street_strength(hand);
-                        eval.equity_vs_pair_sets = calculate_equity_vs_range(hand, 5, is_pair_sets_on_board);
+                            // 再次检查，避免在等待锁的时候，其他线程已经计算完成
+                            if (!done[precise_hole_idx][canonical_board_idx]) {
+                                int hand[5] = {h1, h2, c1, c2, c3};
+                                holdem_evaluation_t eval;
+                                eval.equity_vs_all = calculate_two_street_strength(hand);
+                                eval.equity_vs_pair_sets = calculate_equity_vs_range(hand, 5, is_pair_sets_on_board);
 
-                        results[precise_hole_idx][canonical_board_idx] = eval;
-                        done[precise_hole_idx][canonical_board_idx] = 1;
+                                results[precise_hole_idx][canonical_board_idx] = eval;
+                                done[precise_hole_idx][canonical_board_idx] = 1;
+                            }
+                            omp_unset_lock(&locks[lock_idx]);
+                        }
                     }
                 }
             }
@@ -545,15 +563,31 @@ void generate_flop_multidimensional_lut(FILE* fp) {
     // 4. 释放内存
     free(results);
     free(done);
+    for (int i = 0; i < num_locks; i++) {
+        omp_destroy_lock(&locks[i]);
+    }
 }
 
 void generate_turn_multidimensional_lut(FILE* fp) {
     printf("Generating turn multidimensional LUT (1326x1755x13) using multi-threading...\n");
 
+    // 关键优化：使用细粒度锁
+    const int num_locks = 4096;
+    omp_lock_t locks[num_locks];
+    for (int i = 0; i < num_locks; i++) {
+        omp_init_lock(&locks[i]);
+    }
+
     // 1. 分配内存
     holdem_evaluation_t (*results)[1755][13] = malloc(sizeof(holdem_evaluation_t[1326][1755][13]));
-    if (!results) {
+    char (*done)[1755][13] = calloc(1326, sizeof(*done)); // 关键优化：添加done数组
+    if (!results || !done) {
         fprintf(stderr, "Error: Failed to allocate memory for turn LUT results.\n");
+        if (results) free(results);
+        if (done) free(done);
+        for (int i = 0; i < num_locks; i++) {
+            omp_destroy_lock(&locks[i]);
+        }
         return;
     }
     // Initialize with a default value
@@ -571,7 +605,6 @@ void generate_turn_multidimensional_lut(FILE* fp) {
                     int board[4] = {c1, c2, c3, c4};
 
                     // 我们使用翻牌的规范索引，加上转牌的牌面作为第三维度
-                    int flop_board[3] = {c1, c2, c3};
                     int canonical_board_idx = get_canonical_flop_index(c1, c2, c3);
                     int turn_rank = c4 / 4;
 
@@ -584,13 +617,24 @@ void generate_turn_multidimensional_lut(FILE* fp) {
                             // 这里我们使用完整的4张公共牌来确定手牌的规范索引
                             int precise_hole_idx = get_precise_hole_index_c(h1, h2, board, 4);
 
-                            // 只需计算一次。这里假设每个(hole, board, turn_rank)组合只会被访问一次
-                            int hand[6] = {h1, h2, c1, c2, c3, c4};
-                            holdem_evaluation_t eval;
-                            eval.equity_vs_all = calculate_one_street_strength(hand, 6);
-                            eval.equity_vs_pair_sets = calculate_equity_vs_range(hand, 6, is_pair_sets_on_board);
+                            // 关键优化：检查是否已计算
+                            if (!done[precise_hole_idx][canonical_board_idx][turn_rank]) {
+                                // 使用细粒度锁
+                                int lock_idx = (precise_hole_idx * 1755 * 13 + canonical_board_idx * 13 + turn_rank) % num_locks;
+                                omp_set_lock(&locks[lock_idx]);
 
-                            results[precise_hole_idx][canonical_board_idx][turn_rank] = eval;
+                                // 双重检查
+                                if (!done[precise_hole_idx][canonical_board_idx][turn_rank]) {
+                                    int hand[6] = {h1, h2, c1, c2, c3, c4};
+                                    holdem_evaluation_t eval;
+                                    eval.equity_vs_all = calculate_one_street_strength(hand, 6);
+                                    eval.equity_vs_pair_sets = calculate_equity_vs_range(hand, 6, is_pair_sets_on_board);
+
+                                    results[precise_hole_idx][canonical_board_idx][turn_rank] = eval;
+                                    done[precise_hole_idx][canonical_board_idx][turn_rank] = 1;
+                                }
+                                omp_unset_lock(&locks[lock_idx]);
+                            }
                         }
                     }
                 }
@@ -604,18 +648,22 @@ void generate_turn_multidimensional_lut(FILE* fp) {
     for (int hole_idx = 0; hole_idx < 1326; hole_idx++) {
         fprintf(fp, "  { // hole_index = %d\n", hole_idx);
         for (int board_idx = 0; board_idx < 1755; board_idx++) {
-            fprintf(fp, "    { // board_texture = %d\n", board_idx);
+            fprintf(fp, "    { /* board_texture = %d */ ", board_idx);
             for (int turn_rank = 0; turn_rank < 13; turn_rank++) {
-                fprintf(fp, "{%d,%d},", results[hole_idx][board_idx][turn_rank].equity_vs_all, results[hole_idx][board_idx][turn_rank].equity_vs_pair_sets);
+                fprintf(fp, "{%d,%d}%s", results[hole_idx][board_idx][turn_rank].equity_vs_all, results[hole_idx][board_idx][turn_rank].equity_vs_pair_sets, (turn_rank < 12) ? "," : "");
             }
-            fprintf(fp, "\n    },\n");
+            fprintf(fp, " },%s", (board_idx < 1754) ? "\n" : "");
         }
-        fprintf(fp, "  },\n");
+        fprintf(fp, "\n  }%s\n", (hole_idx < 1325) ? "," : "");
     }
     fprintf(fp, "};\n\n");
 
     // 4. 释放内存
     free(results);
+    free(done);
+    for (int i = 0; i < num_locks; i++) {
+        omp_destroy_lock(&locks[i]);
+    }
 }
 
 void generate_river_multidimensional_lut(FILE* fp) {
