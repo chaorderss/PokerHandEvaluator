@@ -22,62 +22,101 @@ extern int evaluate_7cards(int a, int b, int c, int d, int e, int f, int g);
 
 #include "tables.h"
 
-// === 花色同构算法 (从 evaluator_holdem_potential.c 复制) ===
+// --- START: Suit Isomorphism Helpers (ported from PokerEnv_notorch.cpp) ---
+
 typedef struct {
     int original_suit;
     int count;
-    int rank_mask;
+    uint16_t rank_mask;
 } SuitInfo;
+
 static int suit_info_compare(const void* a, const void* b) {
-    const SuitInfo* sa = (const SuitInfo*)a;
-    const SuitInfo* sb = (const SuitInfo*)b;
-    if (sa->count != sb->count) return sb->count - sa->count;
-    if (sa->rank_mask != sb->rank_mask) return sb->rank_mask - sa->rank_mask;
-    return sa->original_suit - sb->original_suit;
+    const SuitInfo* info1 = (const SuitInfo*)a;
+    const SuitInfo* info2 = (const SuitInfo*)b;
+
+    if (info1->count != info2->count) {
+        return info2->count - info1->count; // Higher count first
+    }
+    if (info1->rank_mask != info2->rank_mask) {
+        // Higher rank masks should come first
+        return (info1->rank_mask > info2->rank_mask) ? -1 : 1;
+    }
+    return info1->original_suit - info2->original_suit; // Stable sort
 }
+
+// This function needs the canonical suit map helper
 static void get_canonical_suit_map(int* community_cards, int board_count, int* canonical_suit_map) {
-    SuitInfo suit_infos[4] = {{0, 0, 0}, {1, 0, 0}, {2, 0, 0}, {3, 0, 0}};
-    for (int i = 0; i < board_count; i++) {
-        int suit = community_cards[i] & 3;
-        int rank = community_cards[i] >> 2;
-        suit_infos[suit].count++;
-        suit_infos[suit].rank_mask |= (1 << rank);
-    }
-    qsort(suit_infos, 4, sizeof(SuitInfo), suit_info_compare);
-    for (int i = 0; i < 4; i++) {
-        canonical_suit_map[suit_infos[i].original_suit] = i;
-    }
+     SuitInfo suit_infos[4];
+     for (int i=0; i<4; ++i) suit_infos[i] = (SuitInfo){i, 0, 0};
+     for (int i = 0; i < board_count; i++) {
+         int suit = community_cards[i] & 3;
+         int rank = community_cards[i] >> 2;
+         suit_infos[suit].count++;
+         suit_infos[suit].rank_mask |= (1 << rank);
+     }
+     qsort(suit_infos, 4, sizeof(SuitInfo), suit_info_compare);
+     for (int i = 0; i < 4; i++) {
+         canonical_suit_map[suit_infos[i].original_suit] = i;
+     }
 }
-static int compare_cards(const void* a, const void* b) {
-    return *(int*)b - *(int*)a;
+
+// C-port of getRangeIdx
+int get_precise_hole_index_c(int h1, int h2, const int* community_cards, int board_count) {
+    int canonical_suit_map[4];
+    get_canonical_suit_map(community_cards, board_count, canonical_suit_map);
+
+    int rank1 = h1 / 4;
+    int suit1 = canonical_suit_map[h1 % 4];
+    int canon_card1_idx = rank1 * 4 + suit1;
+
+    int rank2 = h2 / 4;
+    int suit2 = canonical_suit_map[h2 % 4];
+    int canon_card2_idx = rank2 * 4 + suit2;
+
+    int c1 = (canon_card1_idx > canon_card2_idx) ? canon_card1_idx : canon_card2_idx;
+    int c2 = (canon_card1_idx < canon_card2_idx) ? canon_card1_idx : canon_card2_idx;
+
+    // C(52, 2) combination formula
+    return c1 * (c1 - 1) / 2 + c2;
 }
+
+static int compare_cards_desc(const void* a, const void* b) {
+    return *(const int*)b - *(const int*)a;
+}
+
+// Re-adding the canonical flop index function
 static int get_canonical_flop_index(int c1, int c2, int c3) {
     int board[3] = {c1, c2, c3};
     int ranks[3];
     int suits[3];
     int canonical_suit_map[4];
+
+    // We use the simpler suit isomorphism for the board itself,
+    // as the precise hole card isomorphism is handled separately.
     get_canonical_suit_map(board, 3, canonical_suit_map);
+
     for (int i=0; i<3; ++i) {
-        int original_suit = board[i] & 3;
-        int rank = board[i] >> 2;
+        int original_suit = board[i] % 4;
+        int rank = board[i] / 4;
         suits[i] = canonical_suit_map[original_suit];
         ranks[i] = rank;
     }
-    qsort(ranks, 3, sizeof(int), compare_cards);
-    int suit_pattern;
-    if (suits[0] == suits[1] && suits[1] == suits[2]) suit_pattern = 3;
-    else if (suits[0] == suits[1] || suits[0] == suits[2] || suits[1] == suits[2]) suit_pattern = 2;
-    else suit_pattern = 1;
-    int rank_pattern;
-    if (ranks[0] == ranks[1] && ranks[1] == ranks[2]) rank_pattern = 3;
-    else if (ranks[0] == ranks[1] || ranks[1] == ranks[2]) rank_pattern = 2;
-    else rank_pattern = 1;
-    int rank_combo_index = (ranks[0] * (ranks[0]-1) * (ranks[0]-2) / 6) +
-                           (ranks[1] * (ranks[1]-1) / 2) +
-                            ranks[2];
-    int final_index = (suit_pattern - 1) * 1000 + (rank_pattern - 1) * 300 + rank_combo_index;
-    return final_index % 1755;
+
+    qsort(ranks, 3, sizeof(int), compare_cards_desc);
+
+    // This is a simplified texture hash. A full 1755 implementation is more complex
+    // but this serves as a good starting point for texture-based classification.
+    int r1 = ranks[0], r2 = ranks[1], r3 = ranks[2];
+    int is_suited = (suits[0] == suits[1] && suits[1] == suits[2]) ? 2 :
+                    (suits[0] == suits[1] || suits[0] == suits[2] || suits[1] == suits[2]) ? 1 : 0;
+
+    int index = r1 * 13 * 13 + r2 * 13 + r3;
+    index = index * 3 + is_suited;
+
+    return index % 1755;
 }
+
+// --- END: Suit Isomorphism Helpers ---
 
 // --- START: Core Evaluation Logic ---
 
@@ -443,47 +482,57 @@ int main(int argc, char** argv) {
 }
 
 void generate_flop_multidimensional_lut(FILE* fp) {
-    printf("Generating flop multidimensional lookup table (169x1755) using multi-threading...\n");
+    printf("Generating flop multidimensional LUT (1326x1755) using multi-threading...\n");
 
-    // 1. 在内存中分配空间来存储结果
-    holdem_evaluation_t (*results)[1755] = malloc(sizeof(holdem_evaluation_t[169][1755]));
-    if (!results) {
+    // 1. 在内存中分配空间来存储结果和完成状态
+    holdem_evaluation_t (*results)[1755] = malloc(sizeof(holdem_evaluation_t[1326][1755]));
+    char (*done)[1755] = calloc(1326, 1755); // Use calloc to initialize to 0
+    if (!results || !done) {
         fprintf(stderr, "Error: Failed to allocate memory for flop LUT results.\n");
+        if (results) free(results);
+        if (done) free(done);
         return;
     }
 
     // 2. 使用OpenMP并行计算
     #pragma omp parallel for schedule(dynamic)
-    for (int hole_idx = 0; hole_idx < 169; hole_idx++) {
-        if (omp_get_thread_num() == 0 && hole_idx > 0 && hole_idx % 5 == 0) {
-            printf("  ... Flop LUT progress: %d / 169\n", hole_idx);
+    for (int c1 = 0; c1 < 52; c1++) {
+        if (omp_get_thread_num() == 0) {
+            printf("  ... Flop LUT progress: %d / 52\n", c1 + 1);
         }
+        for (int c2 = c1 + 1; c2 < 52; c2++) {
+            for (int c3 = c2 + 1; c3 < 52; c3++) {
+                int board[3] = {c1, c2, c3};
+                int canonical_board_idx = get_canonical_flop_index(c1, c2, c3);
 
-        for (int board_idx = 0; board_idx < 1755; board_idx++) {
-            int used_cards[52] = {0};
-            int hand[5];
-            index_to_hole_cards(hole_idx, &hand[0], &hand[1]);
-            used_cards[hand[0]] = 1;
-            used_cards[hand[1]] = 1;
-            generate_board_from_texture(board_idx, &hand[2], used_cards);
+                // 遍历所有可能的洞牌
+                for (int h1 = 0; h1 < 52; h1++) {
+                    if (h1 == c1 || h1 == c2 || h1 == c3) continue;
+                    for (int h2 = h1 + 1; h2 < 52; h2++) {
+                        if (h2 == c1 || h2 == c2 || h2 == c3) continue;
 
-            holdem_evaluation_t eval;
-            eval.equity_vs_all = calculate_two_street_strength(hand);
-            eval.equity_vs_pair_sets = calculate_equity_vs_range(hand, 5, is_pair_sets_on_board);
+                        int precise_hole_idx = get_precise_hole_index_c(h1, h2, board, 3);
 
-            if (eval.equity_vs_all > 10000) eval.equity_vs_all = 10000;
-            if (eval.equity_vs_all < 0) eval.equity_vs_all = 0;
-            if (eval.equity_vs_pair_sets > 10000) eval.equity_vs_pair_sets = 10000;
-            if (eval.equity_vs_pair_sets < 0) eval.equity_vs_pair_sets = 0;
+                        // 只计算一次
+                        if (done[precise_hole_idx][canonical_board_idx]) continue;
 
-            results[hole_idx][board_idx] = eval;
+                        int hand[5] = {h1, h2, c1, c2, c3};
+                        holdem_evaluation_t eval;
+                        eval.equity_vs_all = calculate_two_street_strength(hand);
+                        eval.equity_vs_pair_sets = calculate_equity_vs_range(hand, 5, is_pair_sets_on_board);
+
+                        results[precise_hole_idx][canonical_board_idx] = eval;
+                        done[precise_hole_idx][canonical_board_idx] = 1;
+                    }
+                }
+            }
         }
     }
 
     // 3. 由单个线程将所有结果写入文件
     printf("All flop computations finished. Writing to file...\n");
-    fprintf(fp, "const holdem_evaluation_t flop_multidimensional_lut[169][1755] = {\n");
-    for (int hole_idx = 0; hole_idx < 169; hole_idx++) {
+    fprintf(fp, "const holdem_evaluation_t flop_multidimensional_lut[1326][1755] = {\n");
+    for (int hole_idx = 0; hole_idx < 1326; hole_idx++) {
         fprintf(fp, "  { // hole_index = %d\n", hole_idx);
         for (int board_idx = 0; board_idx < 1755; board_idx++) {
             fprintf(fp, "{%d,%d},", results[hole_idx][board_idx].equity_vs_all, results[hole_idx][board_idx].equity_vs_pair_sets);
@@ -495,65 +544,64 @@ void generate_flop_multidimensional_lut(FILE* fp) {
 
     // 4. 释放内存
     free(results);
+    free(done);
 }
 
 void generate_turn_multidimensional_lut(FILE* fp) {
-    printf("Generating turn multidimensional lookup table (169x1755x13) using multi-threading...\n");
+    printf("Generating turn multidimensional LUT (1326x1755x13) using multi-threading...\n");
 
     // 1. 分配内存
-    holdem_evaluation_t (*results)[1755][13] = malloc(sizeof(holdem_evaluation_t[169][1755][13]));
+    holdem_evaluation_t (*results)[1755][13] = malloc(sizeof(holdem_evaluation_t[1326][1755][13]));
     if (!results) {
         fprintf(stderr, "Error: Failed to allocate memory for turn LUT results.\n");
         return;
     }
+    // Initialize with a default value
+    memset(results, 0, sizeof(holdem_evaluation_t[1326][1755][13]));
 
     // 2. OpenMP并行计算
     #pragma omp parallel for schedule(dynamic)
-    for (int hole_idx = 0; hole_idx < 169; hole_idx++) {
-        if (omp_get_thread_num() == 0 && hole_idx > 0 && hole_idx % 5 == 0) {
-           printf("  ... Turn LUT progress: %d / 169\n", hole_idx);
+    for (int c1 = 0; c1 < 52; c1++) {
+        if (omp_get_thread_num() == 0) {
+           printf("  ... Turn LUT progress: %d / 52\n", c1 + 1);
         }
+        for (int c2 = c1 + 1; c2 < 52; c2++) {
+            for (int c3 = c2 + 1; c3 < 52; c3++) {
+                for (int c4 = c3 + 1; c4 < 52; c4++) {
+                    int board[4] = {c1, c2, c3, c4};
 
-        for (int board_idx = 0; board_idx < 1755; board_idx++) {
-            for (int turn_rank = 0; turn_rank < 13; turn_rank++) {
-                int used_cards[52] = {0};
-                int hand[6];
-                index_to_hole_cards(hole_idx, &hand[0], &hand[1]);
-                used_cards[hand[0]] = 1;
-                used_cards[hand[1]] = 1;
-                generate_board_from_texture(board_idx, &hand[2], used_cards);
+                    // 我们使用翻牌的规范索引，加上转牌的牌面作为第三维度
+                    int flop_board[3] = {c1, c2, c3};
+                    int canonical_board_idx = get_canonical_flop_index(c1, c2, c3);
+                    int turn_rank = c4 / 4;
 
-                int turn_card = -1;
-                for(int s = 0; s < 4; s++) {
-                    if (!used_cards[turn_rank * 4 + s]) {
-                        turn_card = turn_rank * 4 + s;
-                        break;
+                    // 遍历所有可能的洞牌
+                    for (int h1 = 0; h1 < 52; h1++) {
+                        if (h1==c1 || h1==c2 || h1==c3 || h1==c4) continue;
+                        for (int h2 = h1 + 1; h2 < 52; h2++) {
+                            if (h2==c1 || h2==c2 || h2==c3 || h2==c4) continue;
+
+                            // 这里我们使用完整的4张公共牌来确定手牌的规范索引
+                            int precise_hole_idx = get_precise_hole_index_c(h1, h2, board, 4);
+
+                            // 只需计算一次。这里假设每个(hole, board, turn_rank)组合只会被访问一次
+                            int hand[6] = {h1, h2, c1, c2, c3, c4};
+                            holdem_evaluation_t eval;
+                            eval.equity_vs_all = calculate_one_street_strength(hand, 6);
+                            eval.equity_vs_pair_sets = calculate_equity_vs_range(hand, 6, is_pair_sets_on_board);
+
+                            results[precise_hole_idx][canonical_board_idx][turn_rank] = eval;
+                        }
                     }
                 }
-                if (turn_card == -1) {
-                    results[hole_idx][board_idx][turn_rank] = (holdem_evaluation_t){5000, 5000};
-                    continue;
-                }
-                hand[5] = turn_card;
-
-                holdem_evaluation_t eval;
-                eval.equity_vs_all = calculate_one_street_strength(hand, 6);
-                eval.equity_vs_pair_sets = calculate_equity_vs_range(hand, 6, is_pair_sets_on_board);
-
-                if (eval.equity_vs_all > 10000) eval.equity_vs_all = 10000;
-                if (eval.equity_vs_all < 0) eval.equity_vs_all = 0;
-                if (eval.equity_vs_pair_sets > 10000) eval.equity_vs_pair_sets = 10000;
-                if (eval.equity_vs_pair_sets < 0) eval.equity_vs_pair_sets = 0;
-
-                results[hole_idx][board_idx][turn_rank] = eval;
             }
         }
     }
 
     // 3. 写入文件
     printf("All turn computations finished. Writing to file...\n");
-    fprintf(fp, "const holdem_evaluation_t turn_multidimensional_lut[169][1755][13] = {\n");
-    for (int hole_idx = 0; hole_idx < 169; hole_idx++) {
+    fprintf(fp, "const holdem_evaluation_t turn_multidimensional_lut[1326][1755][13] = {\n");
+    for (int hole_idx = 0; hole_idx < 1326; hole_idx++) {
         fprintf(fp, "  { // hole_index = %d\n", hole_idx);
         for (int board_idx = 0; board_idx < 1755; board_idx++) {
             fprintf(fp, "    { // board_texture = %d\n", board_idx);

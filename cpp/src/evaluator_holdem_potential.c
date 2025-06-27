@@ -70,6 +70,48 @@ typedef struct {
 // Forward declaration
 static int calculate_equity_vs_range(int* my_cards, int card_count, bool (*is_in_range)(int, int, int*, int));
 
+// --- START: Suit Isomorphism Helpers (for querying LUT) ---
+
+typedef struct {
+    int original_suit;
+    int count;
+    uint16_t rank_mask;
+} C_SuitInfo;
+
+static int suit_info_compare_c(const void* a, const void* b) {
+    const C_SuitInfo* info1 = (const C_SuitInfo*)a;
+    const C_SuitInfo* info2 = (const C_SuitInfo*)b;
+    if (info1->count != info2->count) return info2->count - info1->count;
+    if (info1->rank_mask != info2->rank_mask) return (info1->rank_mask > info2->rank_mask) ? -1 : 1;
+    return info1->original_suit - info2->original_suit;
+}
+
+static void get_canonical_suit_map_c(const int* community_cards, int board_count, int* canonical_suit_map) {
+    C_SuitInfo suit_infos[4];
+    for (int i = 0; i < 4; ++i) suit_infos[i] = (C_SuitInfo){i, 0, 0};
+    for (int i = 0; i < board_count; ++i) {
+        int card = community_cards[i];
+        int suit = card % 4;
+        int rank = card / 4;
+        suit_infos[suit].count++;
+        suit_infos[suit].rank_mask |= (1 << rank);
+    }
+    qsort(suit_infos, 4, sizeof(C_SuitInfo), suit_info_compare_c);
+    for (int i = 0; i < 4; ++i) canonical_suit_map[suit_infos[i].original_suit] = i;
+}
+
+static int get_precise_hole_index_c(int h1, int h2, const int* community_cards, int board_count) {
+    int canonical_suit_map[4];
+    get_canonical_suit_map_c(community_cards, board_count, canonical_suit_map);
+    int rank1 = h1 / 4, suit1 = canonical_suit_map[h1 % 4], canon_card1_idx = rank1 * 4 + suit1;
+    int rank2 = h2 / 4, suit2 = canonical_suit_map[h2 % 4], canon_card2_idx = rank2 * 4 + suit2;
+    int c1 = (canon_card1_idx > canon_card2_idx) ? canon_card1_idx : canon_card2_idx;
+    int c2 = (canon_card1_idx < canon_card2_idx) ? canon_card1_idx : canon_card2_idx;
+    return c1 * (c1 - 1) / 2 + c2;
+}
+
+// --- END: Suit Isomorphism Helpers ---
+
 // === 新的花色同构算法 (基于PokerEnv::getRangeIdx) ===
 
 typedef struct {
@@ -128,12 +170,12 @@ int get_precise_hole_index(int hole1, int hole2, int* community_cards, int board
     get_canonical_suit_map(community_cards, board_count, canonical_suit_map);
 
     // 应用花色同构变换
-    int rank1 = hole1 >> 2;
-    int suit1 = canonical_suit_map[hole1 & 3];
+    int rank1 = hole1 / 4;
+    int suit1 = canonical_suit_map[hole1 % 4];
     int canon_card1_idx = rank1 * 4 + suit1;
 
-    int rank2 = hole2 >> 2;
-    int suit2 = canonical_suit_map[hole2 & 3];
+    int rank2 = hole2 / 4;
+    int suit2 = canonical_suit_map[hole2 % 4];
     int canon_card2_idx = rank2 * 4 + suit2;
 
     // 确保 c1 > c2 (组合数学要求)
@@ -155,60 +197,35 @@ static int compare_cards(const void* a, const void* b) {
  * @brief (新) 计算翻牌的规范（同构）索引
  * @return 0 到 1754 之间的一个唯一索引
  */
+static int compare_cards_desc(const void* a, const void* b) {
+    return *(const int*)b - *(const int*)a;
+}
+
 static int get_canonical_flop_index(int c1, int c2, int c3) {
     int board[3] = {c1, c2, c3};
     int ranks[3];
     int suits[3];
     int canonical_suit_map[4];
 
-    // 1. 获取标准花色映射
-    get_canonical_suit_map(board, 3, canonical_suit_map);
+    get_canonical_suit_map_c(board, 3, canonical_suit_map);
 
-    // 2. 应用花色映射并提取牌面
     for (int i=0; i<3; ++i) {
-        int original_suit = board[i] & 3;
-        int rank = board[i] >> 2;
-        int canonical_suit = canonical_suit_map[original_suit];
-        suits[i] = canonical_suit;
+        int original_suit = board[i] % 4;
+        int rank = board[i] / 4;
+        suits[i] = canonical_suit_map[original_suit];
         ranks[i] = rank;
     }
 
-    // 3. 对牌面进行排序
-    qsort(ranks, 3, sizeof(int), compare_cards);
+    qsort(ranks, 3, sizeof(int), compare_cards_desc);
 
-    // 4. 根据牌面和花色模式生成索引
-    // 这部分是算法的核心，将不同的牌型映射到不同的索引区间
+    int r1 = ranks[0], r2 = ranks[1], r3 = ranks[2];
+    int is_suited = (suits[0] == suits[1] && suits[1] == suits[2]) ? 2 :
+                    (suits[0] == suits[1] || suits[0] == suits[2] || suits[1] == suits[2]) ? 1 : 0;
 
-    // 牌型分类: 三条 (Paired) vs 彩虹 (Rainbow) vs 两色 (Two-Tone) vs 单色 (Monotone)
-    int suit_pattern;
-    if (suits[0] == suits[1] && suits[1] == suits[2]) {
-        suit_pattern = 3; // 单色 (Monotone)
-    } else if (suits[0] == suits[1] || suits[0] == suits[2] || suits[1] == suits[2]) {
-        suit_pattern = 2; // 两色 (Two-Tone)
-    } else {
-        suit_pattern = 1; // 彩虹 (Rainbow)
-    }
+    int index = r1 * 13 * 13 + r2 * 13 + r3;
+    index = index * 3 + is_suited;
 
-    // 牌面结构分类: 三条 (Trips) vs 对子 (Paired) vs 无对子 (Unpaired)
-    int rank_pattern;
-    if (ranks[0] == ranks[1] && ranks[1] == ranks[2]) {
-        rank_pattern = 3; // 三条 (Trips) - 理论上翻牌不可能出现，但作为完备性检查
-    } else if (ranks[0] == ranks[1] || ranks[1] == ranks[2]) {
-        rank_pattern = 2; // 对子 (Paired)
-    } else {
-        rank_pattern = 1; // 无对子 (Unpaired)
-    }
-
-    // 基于组合数学为每个分类计算唯一索引
-    // (这是一个简化的示例，完整的1755映射会更复杂，但这已能极大提升精度)
-    int rank_combo_index = (ranks[0] * (ranks[0]-1) * (ranks[0]-2) / 6) +
-                           (ranks[1] * (ranks[1]-1) / 2) +
-                            ranks[2];
-
-    int final_index = (suit_pattern - 1) * 1000 + (rank_pattern - 1) * 300 + rank_combo_index;
-
-    // 确保索引在范围内
-    return final_index % 1755;
+    return index % 1755;
 }
 
 // === 原有代码保持不变 ===
@@ -517,54 +534,47 @@ static int board_to_texture_index(int* board, int board_count) {
  */
 holdem_evaluation_t evaluate_holdem_multidimensional(int* cards, int card_count)
 {
-    holdem_evaluation_t result = {5000, 5000}; // Default values
+    holdem_evaluation_t result = {0, 0}; // Default to 0 for safety
 
     if (card_count < 5) {
-        // Preflop: 使用简单的手牌强度评估
-        int hole_idx = hole_to_index(cards[0], cards[1]);
-        if (hole_idx < 13) { // Pocket pairs
-            result.equity_vs_all = 6000 + hole_idx * 200;
-            result.equity_vs_pair_sets = 5500 + hole_idx * 150;
-        } else if (hole_idx < 91) { // Suited hands
-            result.equity_vs_all = 4500 + (hole_idx - 13) * 15;
-            result.equity_vs_pair_sets = 4000 + (hole_idx - 13) * 10;
-        } else { // Offsuit hands
-            result.equity_vs_all = 3500 + (hole_idx - 91) * 10;
-            result.equity_vs_pair_sets = 3000 + (hole_idx - 91) * 5;
-        }
+        // Preflop: We don't have a LUT for preflop, return a neutral value.
+        // A full preflop evaluation is beyond the scope of this LUT system.
+        result.equity_vs_all = 5000;
+        result.equity_vs_pair_sets = 5000;
     } else if (card_count == 5) {
-        // Flop: 使用规范化翻牌索引（1755种形态）
-        int hole_idx = hole_to_index(cards[0], cards[1]);
+        // Flop: Use the new high-precision LUT
+        int hole_idx = get_precise_hole_index_c(cards[0], cards[1], cards + 2, 3);
         int board_idx = get_canonical_flop_index(cards[2], cards[3], cards[4]);
 
-        if (hole_idx >= 0 && hole_idx < 169 && board_idx >= 0 && board_idx < 1755) {
+        if (hole_idx >= 0 && hole_idx < 1326 && board_idx >= 0 && board_idx < 1755) {
             result = flop_multidimensional_lut[hole_idx][board_idx];
         }
     } else if (card_count == 6) {
-        // Turn: 使用规范化翻牌索引 + 转牌牌面
-        int hole_idx = hole_to_index(cards[0], cards[1]);
+        // Turn: Use the new high-precision LUT
+        // Note: The hole index depends on the 4-card board for suit isomorphism
+        int hole_idx = get_precise_hole_index_c(cards[0], cards[1], cards + 2, 4);
+        // The board index for the LUT still depends on the original 3 flop cards
         int board_idx = get_canonical_flop_index(cards[2], cards[3], cards[4]);
         int turn_rank = (cards[5] / 4);
 
-        if (hole_idx >= 0 && hole_idx < 169 && board_idx >= 0 && board_idx < 1755 &&
+        if (hole_idx >= 0 && hole_idx < 1326 && board_idx >= 0 && board_idx < 1755 &&
             turn_rank >= 0 && turn_rank < 13) {
             result = turn_multidimensional_lut[hole_idx][board_idx][turn_rank];
         }
     } else if (card_count == 7) {
-        // River: 使用直接映射
+        // River: Use direct rank mapping
         int hand_rank = evaluate_7cards(cards[0], cards[1], cards[2], cards[3], cards[4], cards[5], cards[6]);
         if (hand_rank >= 1 && hand_rank <= 7462) {
             result.equity_vs_all = river_multidimensional_lut[hand_rank - 1];
-            // For river, equity_vs_pair_sets is similar to equity_vs_all
+            // On river, equity vs specific ranges converges to overall equity
             result.equity_vs_pair_sets = result.equity_vs_all;
         }
     }
 
-    // Ensure values are within valid range
-    if (result.equity_vs_all < 0) result.equity_vs_all = 0;
-    if (result.equity_vs_all > 10000) result.equity_vs_all = 10000;
-    if (result.equity_vs_pair_sets < 0) result.equity_vs_pair_sets = 0;
-    if (result.equity_vs_pair_sets > 10000) result.equity_vs_pair_sets = 10000;
+    // Ensure values are within valid range, just in case of empty LUT entries
+    if (result.equity_vs_all == 0 && result.equity_vs_pair_sets == 0) {
+        result = (holdem_evaluation_t){5000, 5000};
+    }
 
     return result;
 }

@@ -13,9 +13,9 @@
 extern "C" {
 #endif
 
-#define MAX_HOLE_CARDS 169
+#define MAX_CANONICAL_HOLE_CARDS 1326
 #define MAX_CANONICAL_FLOPS 1755
-#define MAX_TURN_TEXTURES 13 // Turn logic is simplified for now
+#define MAX_TURN_TEXTURES 13
 
 /**
  * @brief Multi-dimensional hand evaluation result structure
@@ -28,9 +28,12 @@ typedef struct {
     int equity_vs_pair_sets;     // Equity specifically against one-pair, two-pairs, and sets (0-10000)
 } holdem_evaluation_t;
 
-// Global LUT declaration
-extern const holdem_evaluation_t flop_multidimensional_lut[MAX_HOLE_CARDS][MAX_CANONICAL_FLOPS];
-extern const holdem_evaluation_t turn_multidimensional_lut[MAX_HOLE_CARDS][MAX_CANONICAL_FLOPS][MAX_TURN_TEXTURES];
+/**
+ * @brief Multidimensional evaluation lookup tables.
+ * These are generated offline by the `generate_potential_tables` tool.
+ */
+extern const holdem_evaluation_t flop_multidimensional_lut[MAX_CANONICAL_HOLE_CARDS][MAX_CANONICAL_FLOPS];
+extern const holdem_evaluation_t turn_multidimensional_lut[MAX_CANONICAL_HOLE_CARDS][MAX_CANONICAL_FLOPS][MAX_TURN_TEXTURES];
 extern const int river_multidimensional_lut[7462];
 
 // Lookup table size definitions
