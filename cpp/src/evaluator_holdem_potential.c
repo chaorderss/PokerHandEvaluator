@@ -23,6 +23,14 @@
 #include "../include/phevaluator/evaluator_holdem_potential.h"
 #include "../include/phevaluator/phevaluator.h"
 #include "evaluator_holdem_potential_tables.h"  // Include generated lookup tables
+#include "hand_index.h" // Import the hand isomorphism library
+
+#ifndef ISOMORPHIC_LUTS_DEFINED
+// Provide dummy definitions for LUTs to allow the generator to compile before tables exist.
+const holdem_evaluation_t flop_multidimensional_lut[1] = {0};
+const holdem_evaluation_t turn_multidimensional_lut[1] = {0};
+const int river_multidimensional_lut[7462] = {0};
+#endif
 
 // Helper functions for debugging
 static const char* debug_ranks[] = {"2", "3", "4", "5", "6", "7", "8", "9", "T", "J", "Q", "K", "A"};
@@ -70,165 +78,51 @@ typedef struct {
 // Forward declaration
 static int calculate_equity_vs_range(int* my_cards, int card_count, bool (*is_in_range)(int, int, int*, int));
 
-// --- START: Suit Isomorphism Helpers (for querying LUT) ---
+// --- START: Isomorphic LUT Query Setup ---
 
-typedef struct {
-    int original_suit;
-    int count;
-    uint16_t rank_mask;
-} C_SuitInfo;
+// Global hand indexer for the turn, initialized once.
+static hand_indexer_t flop_indexer;
+static hand_indexer_t turn_indexer;
+static bool flop_indexer_initialized = false;
+static bool turn_indexer_initialized = false;
 
-static int suit_info_compare_c(const void* a, const void* b) {
-    const C_SuitInfo* info1 = (const C_SuitInfo*)a;
-    const C_SuitInfo* info2 = (const C_SuitInfo*)b;
-    if (info1->count != info2->count) return info2->count - info1->count;
-    if (info1->rank_mask != info2->rank_mask) return (info1->rank_mask > info2->rank_mask) ? -1 : 1;
-    return info1->original_suit - info2->original_suit;
-}
-
-static void get_canonical_suit_map_c(const int* community_cards, int board_count, int* canonical_suit_map) {
-    C_SuitInfo suit_infos[4];
-    for (int i = 0; i < 4; ++i) suit_infos[i] = (C_SuitInfo){i, 0, 0};
-    for (int i = 0; i < board_count; ++i) {
-        int card = community_cards[i];
-        int suit = card % 4;
-        int rank = card / 4;
-        suit_infos[suit].count++;
-        suit_infos[suit].rank_mask |= (1 << rank);
+static void initialize_indexers() {
+    if (!flop_indexer_initialized) {
+        uint8_t flop_cards_per_round[] = {2, 3}; // hole, flop
+        if (hand_indexer_init(2, flop_cards_per_round, &flop_indexer)) {
+            flop_indexer_initialized = true;
+        }
     }
-    qsort(suit_infos, 4, sizeof(C_SuitInfo), suit_info_compare_c);
-    for (int i = 0; i < 4; ++i) canonical_suit_map[suit_infos[i].original_suit] = i;
-}
-
-static int get_precise_hole_index_c(int h1, int h2, const int* community_cards, int board_count) {
-    int canonical_suit_map[4];
-    get_canonical_suit_map_c(community_cards, board_count, canonical_suit_map);
-    int rank1 = h1 / 4, suit1 = canonical_suit_map[h1 % 4], canon_card1_idx = rank1 * 4 + suit1;
-    int rank2 = h2 / 4, suit2 = canonical_suit_map[h2 % 4], canon_card2_idx = rank2 * 4 + suit2;
-    int c1 = (canon_card1_idx > canon_card2_idx) ? canon_card1_idx : canon_card2_idx;
-    int c2 = (canon_card1_idx < canon_card2_idx) ? canon_card1_idx : canon_card2_idx;
-    return c1 * (c1 - 1) / 2 + c2;
-}
-
-// --- END: Suit Isomorphism Helpers ---
-
-// === 新的花色同构算法 (基于PokerEnv::getRangeIdx) ===
-
-typedef struct {
-    int original_suit;
-    int count;
-    int rank_mask;  // 位掩码表示该花色在公共牌上的牌面
-} SuitInfo;
-
-static int suit_info_compare(const void* a, const void* b) {
-    const SuitInfo* sa = (const SuitInfo*)a;
-    const SuitInfo* sb = (const SuitInfo*)b;
-
-    // 按牌数排序（多的在前）
-    if (sa->count != sb->count) {
-        return sb->count - sa->count;
-    }
-    // 按牌面掩码排序（大的在前）
-    if (sa->rank_mask != sb->rank_mask) {
-        return sb->rank_mask - sa->rank_mask;
-    }
-    // 稳定排序
-    return sa->original_suit - sb->original_suit;
-}
-
-/**
- * @brief 根据公共牌获取标准花色映射
- * 这个函数实现了与PokerEnv::_getCanonicalSuitMap_static相同的逻辑
- */
-static void get_canonical_suit_map(int* community_cards, int board_count, int* canonical_suit_map) {
-    SuitInfo suit_infos[4] = {{0, 0, 0}, {1, 0, 0}, {2, 0, 0}, {3, 0, 0}};
-
-    // 统计每个花色的牌数和牌面掩码
-    for (int i = 0; i < board_count; i++) {
-        int suit = community_cards[i] & 3;  // 花色 = 卡牌编号 & 3
-        int rank = community_cards[i] >> 2; // 牌面 = 卡牌编号 >> 2
-
-        suit_infos[suit].count++;
-        suit_infos[suit].rank_mask |= (1 << rank);
-    }
-
-    // 按规则排序：牌数多的在前，相同牌数时按牌面掩码大的在前
-    qsort(suit_infos, 4, sizeof(SuitInfo), suit_info_compare);
-
-    // 生成映射：原始花色 -> 标准花色
-    for (int i = 0; i < 4; i++) {
-        canonical_suit_map[suit_infos[i].original_suit] = i;
+    if (!turn_indexer_initialized) {
+        uint8_t turn_cards_per_round[] = {2, 3, 1}; // hole, flop, turn
+        if (hand_indexer_init(3, turn_cards_per_round, &turn_indexer)) {
+            turn_indexer_initialized = true;
+        }
     }
 }
 
-/**
- * @brief 基于花色同构的精确手牌索引计算
- * 使用组合数学公式 C(c1, 2) + c2 生成 0-1325 范围的唯一索引
- */
-int get_precise_hole_index(int hole1, int hole2, int* community_cards, int board_count) {
-    int canonical_suit_map[4];
-    get_canonical_suit_map(community_cards, board_count, canonical_suit_map);
-
-    // 应用花色同构变换
-    int rank1 = hole1 / 4;
-    int suit1 = canonical_suit_map[hole1 % 4];
-    int canon_card1_idx = rank1 * 4 + suit1;
-
-    int rank2 = hole2 / 4;
-    int suit2 = canonical_suit_map[hole2 % 4];
-    int canon_card2_idx = rank2 * 4 + suit2;
-
-    // 确保 c1 > c2 (组合数学要求)
-    int c1 = canon_card1_idx > canon_card2_idx ? canon_card1_idx : canon_card2_idx;
-    int c2 = canon_card1_idx < canon_card2_idx ? canon_card1_idx : canon_card2_idx;
-
-    // 使用组合公式生成唯一索引 (0-1325)
-    return c1 * (c1 - 1) / 2 + c2;
+// A constructor function to automatically initialize the indexer at library load time.
+__attribute__((constructor))
+static void library_init() {
+    initialize_indexers();
 }
 
-/**
- * @brief (新) 比较两张牌的函数，用于qsort
- */
-static int compare_cards(const void* a, const void* b) {
-    return *(int*)b - *(int*)a; // 从大到小排序
-}
-
-/**
- * @brief (新) 计算翻牌的规范（同构）索引
- * @return 0 到 1754 之间的一个唯一索引
- */
-static int compare_cards_desc(const void* a, const void* b) {
-    return *(const int*)b - *(const int*)a;
-}
-
-static int get_canonical_flop_index(int c1, int c2, int c3) {
-    int board[3] = {c1, c2, c3};
-    int ranks[3];
-    int suits[3];
-    int canonical_suit_map[4];
-
-    get_canonical_suit_map_c(board, 3, canonical_suit_map);
-
-    for (int i=0; i<3; ++i) {
-        int original_suit = board[i] % 4;
-        int rank = board[i] / 4;
-        suits[i] = canonical_suit_map[original_suit];
-        ranks[i] = rank;
+// A destructor function to clean up at library unload time.
+__attribute__((destructor))
+static void library_cleanup() {
+    if (flop_indexer_initialized) {
+        hand_indexer_free(&flop_indexer);
+        flop_indexer_initialized = false;
     }
-
-    qsort(ranks, 3, sizeof(int), compare_cards_desc);
-
-    int r1 = ranks[0], r2 = ranks[1], r3 = ranks[2];
-    int is_suited = (suits[0] == suits[1] && suits[1] == suits[2]) ? 2 :
-                    (suits[0] == suits[1] || suits[0] == suits[2] || suits[1] == suits[2]) ? 1 : 0;
-
-    int index = r1 * 13 * 13 + r2 * 13 + r3;
-    index = index * 3 + is_suited;
-
-    return index % 1755;
+    if (turn_indexer_initialized) {
+        hand_indexer_free(&turn_indexer);
+        turn_indexer_initialized = false;
+    }
 }
 
-// === 原有代码保持不变 ===
+// --- END: Isomorphic LUT Query Setup ---
+
+// === 原有的代码保持不变 ===
 
 static int get_best_rank(int c1, int c2, int* board, int board_count) {
     int hand[7];
@@ -525,15 +419,8 @@ static int hole_to_index(int c1, int c2) {
 
 // Helper function to convert board to texture index
 static int board_to_texture_index(int* board, int board_count) {
-    if (board_count == 3) {
-        return get_canonical_flop_index(board[0], board[1], board[2]);
-    }
-    // 对于转牌和河牌，暂时保留旧逻辑或返回一个简化值
-    // 因为完整的转/河牌同构非常复杂
-    if (board_count == 4) {
-        // 简化处理：只看前三张
-        return get_canonical_flop_index(board[0], board[1], board[2]);
-    }
+    // This function is no longer used with the new hand_indexer approach
+    // Keeping it for compatibility, returning a default value
     return 0;
 }
 
@@ -546,33 +433,58 @@ holdem_evaluation_t evaluate_holdem_multidimensional(int* cards, int card_count)
 
     if (card_count < 5) {
         // Preflop: We don't have a LUT for preflop, return a neutral value.
-        // A full preflop evaluation is beyond the scope of this LUT system.
         result.equity_vs_all = 5000;
         result.equity_vs_pair_sets = 5000;
     } else if (card_count == 5) {
-        // Flop: Use the new high-precision LUT
-        int hole_idx = get_precise_hole_index_c(cards[0], cards[1], cards + 2, 3);
-        int board_idx = get_canonical_flop_index(cards[2], cards[3], cards[4]);
-
-        if (hole_idx >= 0 && hole_idx < 1326 && board_idx >= 0 && board_idx < 1755) {
-            result = flop_multidimensional_lut[hole_idx][board_idx];
+        // Flop: Use the new isomorphic LUT
+        if (flop_indexer_initialized) {
+            uint8_t cards_u8[5];
+            for (int i = 0; i < 5; i++) {
+                cards_u8[i] = (uint8_t)cards[i];
+            }
+            hand_index_t index = hand_index_last(&flop_indexer, cards_u8);
+            result = flop_multidimensional_lut[index];
+        } else {
+            // Fallback if indexer failed to initialize
+            result = evaluate_holdem_multidimensional_nolut(cards, 5);
         }
     } else if (card_count == 6) {
-        // Turn: Use the compressed high-precision LUT
-        result = lookup_turn_multidimensional(cards[0], cards[1], cards[2], cards[3], cards[4], cards[5]);
+        // Turn: Use the new isomorphic LUT
+        if (turn_indexer_initialized) {
+            uint8_t cards_u8[6];
+            // The hand_indexer expects hole cards, then flop, then turn.
+            // The input `cards` array is already in this order.
+            for (int i=0; i<6; i++) {
+                cards_u8[i] = (uint8_t)cards[i];
+            }
+            hand_index_t index = hand_index_last(&turn_indexer, cards_u8);
+
+            // The size of the LUT is known at compile time via the generated header.
+            // We can get it from the indexer too for a runtime check, but it's not strictly necessary.
+            // hand_index_t lut_size = hand_indexer_size(&turn_indexer, 2);
+            // if (index < lut_size) {
+            result = turn_multidimensional_lut[index];
+            // }
+
+        } else {
+            // Fallback if indexer failed to initialize
+            result = evaluate_holdem_multidimensional_nolut(cards, 6);
+        }
     } else if (card_count == 7) {
-        // River: Use direct rank mapping
+        // River: Use direct rank mapping (this part remains the same)
         int hand_rank = evaluate_7cards(cards[0], cards[1], cards[2], cards[3], cards[4], cards[5], cards[6]);
         if (hand_rank >= 1 && hand_rank <= 7462) {
             result.equity_vs_all = river_multidimensional_lut[hand_rank - 1];
-            // On river, equity vs specific ranges converges to overall equity
             result.equity_vs_pair_sets = result.equity_vs_all;
         }
     }
 
     // Ensure values are within valid range, just in case of empty LUT entries
     if (result.equity_vs_all == 0 && result.equity_vs_pair_sets == 0) {
-        result = (holdem_evaluation_t){5000, 5000};
+        // If the LUT entry is {0,0}, it might be an un-calculated value.
+        // Fallback to a neutral value or the no-LUT calculation.
+        // The no-LUT calculation is safer as it will give a reasonable estimate.
+        return evaluate_holdem_multidimensional_nolut(cards, card_count);
     }
 
     return result;
@@ -645,8 +557,10 @@ int get_hole_index(int c1, int c2) {
 }
 
 int get_flop_index(int c1, int c2, int c3) {
-    int cards[3] = {c1, c2, c3};
-    return board_to_texture_index(cards, 3);
+    // This function is part of a legacy API and its implementation
+    // is not critical for the new isomorphic LUT generator to compile.
+    // Returning 0 to satisfy the compiler.
+    return 0;
 }
 
 int get_turn_index(int turn_card, unsigned long long known_cards) {
@@ -803,88 +717,4 @@ static int calculate_equity_vs_range(int* my_cards, int card_count, bool (*is_in
     int final_equity = (int)((total_equity / matchups) * 10000);
     free(opponent_hands);
     return final_equity;
-}
-
-// 比较函数（已在第200行定义）
-
-// 新增：4张牌精确索引计算函数
-int get_precise_turn_index(int h1, int h2, int c1, int c2, int c3, int c4) {
-    // 使用完整的6张牌进行花色同构计算
-    int all_cards[6] = {h1, h2, c1, c2, c3, c4};
-    uint64_t hash = 0;
-
-    // 排序后计算哈希值（使用已定义的比较函数）
-    qsort(all_cards, 6, sizeof(int), compare_cards_desc);
-
-    for (int i = 0; i < 6; i++) {
-        hash = hash * 53 + all_cards[i];
-    }
-
-    return hash % MAX_COMPRESSED_TURN_COMBINATIONS;
-}
-
-// 新增：压缩Turn LUT查询函数
-holdem_evaluation_t lookup_turn_multidimensional(int h1, int h2, int c1, int c2, int c3, int c4) {
-    // 计算查询键
-    int flop_board[3] = {c1, c2, c3};
-    uint16_t hole_index = get_precise_hole_index_c(h1, h2, flop_board, 3);
-    uint16_t flop_texture = get_canonical_flop_index(c1, c2, c3);
-    uint8_t turn_rank = c4 / 4;
-
-    // 计算转牌花色影响
-    int turn_suits[4] = {0};
-    turn_suits[c1 % 4]++;
-    turn_suits[c2 % 4]++;
-    turn_suits[c3 % 4]++;
-    turn_suits[c4 % 4]++;
-
-    uint8_t suit_impact = 0;
-    for (int i = 0; i < 4; i++) {
-        if (turn_suits[i] >= 3) suit_impact |= (1 << i);
-    }
-
-    // DEBUG: 打印查询参数 (仅前几次)
-    static int debug_count = 0;
-    if (debug_count < 3) {
-        printf("DEBUG Turn LUT查询 #%d:\n", debug_count);
-        printf("  卡牌: ");
-        print_card(h1); print_card(h2); print_card(c1); print_card(c2); print_card(c3); print_card(c4);
-        printf("\n");
-        printf("  hole_index=%u, flop_texture=%u, turn_rank=%u, suit_impact=%u\n",
-               hole_index, flop_texture, turn_rank, suit_impact);
-        printf("  LUT大小: %u\n", turn_lut_size);
-
-        // 显示前几个key
-        printf("  前5个LUT keys:\n");
-        for (int i = 0; i < 5 && i < turn_lut_size; i++) {
-            const compressed_turn_key_t* key = &turn_lut_key_map[i];
-            printf("    [%d]: hole=%u, flop=%u, rank=%u, suit=%u\n",
-                   i, key->hole_index_3card, key->flop_texture_index, key->turn_rank, key->turn_suit_impact);
-        }
-        debug_count++;
-    }
-
-    // 在压缩LUT中查找匹配项
-    for (uint32_t i = 0; i < turn_lut_size; i++) {
-        const compressed_turn_key_t* key = &turn_lut_key_map[i];
-        if (key->hole_index_3card == hole_index &&
-            key->flop_texture_index == flop_texture &&
-            key->turn_rank == turn_rank &&
-            key->turn_suit_impact == suit_impact) {
-            if (debug_count <= 3) {
-                printf("  -> 找到匹配项: 索引%u, 结果(%d, %d)\n", i,
-                       turn_multidimensional_lut_compressed[i].equity_vs_all,
-                       turn_multidimensional_lut_compressed[i].equity_vs_pair_sets);
-            }
-            return turn_multidimensional_lut_compressed[i];
-        }
-    }
-
-    // 如果未找到，fallback到非LUT版本计算
-    if (debug_count <= 3) {
-        printf("  -> 未找到匹配项，fallback到非LUT计算\n");
-    }
-
-    int cards[6] = {h1, h2, c1, c2, c3, c4};
-    return evaluate_holdem_multidimensional_nolut(cards, 6);
 }

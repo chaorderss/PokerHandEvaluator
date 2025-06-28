@@ -36,6 +36,8 @@ add_executable(generate_potential_tables
   src/hash.c
   src/7462.c
 )
+target_link_libraries(generate_potential_tables PRIVATE -lm handisomorphism)
+target_compile_options(generate_potential_tables PRIVATE -fopenmp)
 
 # Remove phev-core dependency - not needed for standalone generator
 
@@ -85,8 +87,9 @@ add_library(pheval SHARED
   ${CMAKE_CURRENT_SOURCE_DIR}/src/evaluator_holdem_potential_tables.h  # 暂时注释掉避免CMake卡住
 )
 target_include_directories(pheval PUBLIC
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-    $<INSTALL_INTERFACE:include/>)
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../include>
+    $<INSTALL_INTERFACE:include>
+)
 target_compile_options(pheval PUBLIC -O3)
 set(PUB_HEADERS include/phevaluator/phevaluator.h
                 include/phevaluator/card.h
@@ -96,6 +99,8 @@ set(PUB_HEADERS include/phevaluator/phevaluator.h
 set_target_properties(pheval PROPERTIES
     VERSION ${PROJECT_VERSION}
     PUBLIC_HEADER "${PUB_HEADERS}")
+target_link_libraries(pheval PUBLIC strength_lut_obj)
+target_link_libraries(pheval PRIVATE handisomorphism)
 
 if (BUILD_CARD5)
   add_library(pheval5 STATIC
@@ -485,3 +490,6 @@ if (UNIX)
 endif()
 add_executable(usage_example usage_example.c)
 target_link_libraries(usage_example pheval)
+
+# Add the hand-isomorphism library as a subdirectory
+add_subdirectory(../../hand-isomorphism/src ${CMAKE_CURRENT_BINARY_DIR}/handisomorphism_build)

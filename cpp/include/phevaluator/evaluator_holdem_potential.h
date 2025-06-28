@@ -14,6 +14,10 @@
 extern "C" {
 #endif
 
+// River lookup table (maps rank to strength)
+extern const int river_multidimensional_lut[7462];
+
+// Legacy constants (kept for compatibility)
 #define MAX_CANONICAL_HOLE_CARDS 1326
 #define MAX_CANONICAL_FLOPS 1755
 #define MAX_TURN_TEXTURES 13
@@ -32,26 +36,10 @@ typedef struct {
 /**
  * @brief Multidimensional evaluation lookup tables.
  * These are generated offline by the `generate_potential_tables` tool.
+ * Uses hand_indexer library for accurate isomorphic indexing.
  */
-extern const holdem_evaluation_t flop_multidimensional_lut[MAX_CANONICAL_HOLE_CARDS][MAX_CANONICAL_FLOPS];
-
-// 重构Turn LUT：使用压缩的4张牌索引
-// 新结构：[COMPRESSED_TURN_COMBINATIONS][13]
-// 其中COMPRESSED_TURN_COMBINATIONS包含：洞牌+翻牌+转牌rank的组合
-#define MAX_COMPRESSED_TURN_COMBINATIONS 200000  // 估算值，实际可能更少
-
-// 压缩的Turn组合结构
-typedef struct {
-    uint16_t hole_index_3card;     // 基于翻牌的3张牌洞牌索引 (0-1325)
-    uint16_t flop_texture_index;   // 翻牌纹理索引 (0-1754)
-    uint8_t turn_rank;             // 转牌rank (0-12)
-    uint8_t turn_suit_impact;      // 转牌对花色分布的影响 (0-15)
-} compressed_turn_key_t;
-
-// 新的Turn LUT声明 - 使用压缩格式
-extern const holdem_evaluation_t turn_multidimensional_lut_compressed[MAX_COMPRESSED_TURN_COMBINATIONS];
-extern const compressed_turn_key_t turn_lut_key_map[MAX_COMPRESSED_TURN_COMBINATIONS];
-extern const uint32_t turn_lut_size;
+extern const holdem_evaluation_t flop_multidimensional_lut[];   // Size determined by hand_indexer
+extern const holdem_evaluation_t turn_multidimensional_lut[];   // Size determined by hand_indexer
 
 // Lookup table size definitions
 #define HOLE_COMBINATIONS 1326      // C(52, 2) = 1326 possible hole card combinations
