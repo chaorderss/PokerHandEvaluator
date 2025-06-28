@@ -230,14 +230,14 @@ static int calculate_equity_vs_range(int* my_cards, int card_count, int (*is_in_
         int opp_c1 = opponent_hands[i][0];
         int opp_c2 = opponent_hands[i][1];
 
-        int runout_deck[52];
+        int runout_deck[52]; // 数组大小可以更精确，如 52 - card_count - 2
         int runout_deck_count = 0;
-        int temp_deck[52];
-        memcpy(temp_deck, deck, 52 * sizeof(int));
-        temp_deck[opp_c1] = -1;
-        temp_deck[opp_c2] = -1;
-        for(int k=0; k<52; k++) {
-            if(temp_deck[k] != -1) runout_deck[runout_deck_count++] = k;
+        // highlight-start
+        for (int k = 0; k < remaining_deck_count; k++) {
+            int card = remaining_deck[k];
+            if (card != opp_c1 && card != opp_c2) {
+                runout_deck[runout_deck_count++] = card;
+            }
         }
 
         int my_hand[7];
