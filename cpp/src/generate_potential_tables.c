@@ -14,7 +14,7 @@
 #include <omp.h>
 #include "../include/phevaluator/phevaluator.h"
 #include "../include/phevaluator/evaluator_holdem_potential.h"
-#include "hand_index.h" // Import the hand isomorphism library
+#include "../../../hand-isomorphism/src/hand_index.h" // Import the hand isomorphism library
 
 // PHEvaluator functions
 extern int evaluate_5cards(int a, int b, int c, int d, int e);

@@ -23,7 +23,7 @@
 #include "../include/phevaluator/evaluator_holdem_potential.h"
 #include "../include/phevaluator/phevaluator.h"
 #include "evaluator_holdem_potential_tables.h"  // Include generated lookup tables
-#include "hand_index.h" // Import the hand isomorphism library
+#include "../../../hand-isomorphism/src/hand_index.h" // Import the hand isomorphism library
 
 #ifndef ISOMORPHIC_LUTS_DEFINED
 // Provide dummy definitions for LUTs to allow the generator to compile before tables exist.
