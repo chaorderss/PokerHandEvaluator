@@ -158,14 +158,12 @@ else()
 endif()
 target_compile_options(generate_potential_tables PRIVATE -fopenmp)
 
-# Remove phev-core dependency - not needed for standalone generator
-
 # Add OpenMP flags for the generator
 # 暂时禁用OpenMP以避免CMake卡住
 find_package(OpenMP)
 if(OpenMP_FOUND)
     message(STATUS "OpenMP found, enabling parallel build for LUT generator.")
-    target_link_libraries(generate_potential_tables PRIVATE OpenMP::OpenMP_C)
+    target_link_libraries(generate_potential_tables PRIVATE OpenMP::OpenMP_C OpenMP::OpenMP_CXX)
 else()
     message(WARNING "OpenMP not found. LUT generator will be built in single-thread mode.")
 endif()

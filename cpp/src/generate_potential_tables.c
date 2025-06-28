@@ -373,10 +373,15 @@ void generate_flop_multidimensional_lut_isomorphic(FILE* fp) {
     }
 
     printf("Calculating evaluations for all canonical flop hands...\n");
+    printf("[DEBUG] About to start flop clustering evaluation parallel region\n");
+    printf("[DEBUG] omp_get_max_threads() = %d\n", omp_get_max_threads());
+
     #pragma omp parallel for schedule(dynamic)
     for (hand_index_t i = 0; i < lut_size; i++) {
-        if (omp_get_thread_num() == 0 && i % 100000 == 0) {
-            printf("  ... Progress: %.2f%% (%" PRIhand_index "/%" PRIhand_index ")\n", (double)i * 100 / lut_size, i, lut_size);
+        int thread_id = omp_get_thread_num();
+        if (thread_id == 0 && i > 0 && i % 100000 == 0) {
+            printf("  ... Flop Eval Progress: %.2f%% (%" PRIhand_index "/%" PRIhand_index ") [Using %d threads]\n",
+                   (double)i * 100 / lut_size, i, lut_size, omp_get_num_threads());
         }
 
         uint8_t cards_u8[5];
@@ -432,10 +437,14 @@ void generate_turn_multidimensional_lut_isomorphic(FILE* fp) {
     }
 
     printf("Calculating evaluations for all canonical turn hands...\n");
+    printf("[DEBUG] About to start OpenMP parallel region for turn evaluation\n");
+    printf("[DEBUG] omp_get_max_threads() = %d\n", omp_get_max_threads());
+
     #pragma omp parallel for schedule(dynamic)
     for (hand_index_t i = 0; i < lut_size; i++) {
         if (omp_get_thread_num() == 0 && i % 100000 == 0) {
-            printf("  ... Progress: %.2f%% (%" PRIhand_index "/%" PRIhand_index ")\n", (double)i * 100 / lut_size, i, lut_size);
+            printf("  ... Progress: %.2f%% (%" PRIhand_index "/%" PRIhand_index ") [Using %d threads]\n",
+                   (double)i * 100 / lut_size, i, lut_size, omp_get_num_threads());
         }
 
         uint8_t cards_u8[6];
@@ -475,6 +484,20 @@ void generate_turn_multidimensional_lut_isomorphic(FILE* fp) {
 // --- END: New Isomorphic Turn LUT Generation ---
 
 int main(int argc, char** argv) {
+    #ifdef _OPENMP
+    // Set OpenMP to use all available processor cores for all parallel regions
+    int num_threads = omp_get_num_procs();
+    omp_set_num_threads(num_threads);
+    printf("OpenMP enabled, setting number of threads to %d.\n", num_threads);
+    printf("OpenMP max threads: %d\n", omp_get_max_threads());
+
+    // Force set environment variable as backup
+    char thread_env[32];
+    snprintf(thread_env, sizeof(thread_env), "%d", num_threads);
+    setenv("OMP_NUM_THREADS", thread_env, 1);
+    printf("Set OMP_NUM_THREADS environment variable to %s\n", thread_env);
+    #endif
+
     const char* output_file = "evaluator_holdem_potential_tables.h";
     bool use_clustering = false;
     size_t flop_clusters = 1000;
@@ -557,17 +580,25 @@ void generate_flop_clustered_lut(FILE* fp, size_t target_flop_clusters, size_t t
 
     printf("Calculating representative evaluations for %zu flop clusters...\n", clustering->size);
 
-    long long* total_equity_vs_all = calloc(clustering->size, sizeof(long long));
-    long long* total_equity_vs_pair_sets = calloc(clustering->size, sizeof(long long));
-    int* hands_in_cluster = calloc(clustering->size, sizeof(int));
+    int max_threads = omp_get_max_threads();
+    long long** per_thread_total_equity_vs_all = malloc(max_threads * sizeof(long long*));
+    long long** per_thread_total_equity_vs_pair_sets = malloc(max_threads * sizeof(long long*));
+    int** per_thread_hands_in_cluster = malloc(max_threads * sizeof(int*));
 
-    if (!total_equity_vs_all || !total_equity_vs_pair_sets || !hands_in_cluster) {
-        fprintf(stderr, "Error: Failed to allocate memory for cluster accumulators.\n");
+    if (!per_thread_total_equity_vs_all || !per_thread_total_equity_vs_pair_sets || !per_thread_hands_in_cluster) {
+        fprintf(stderr, "Error: Failed to allocate memory for per-thread accumulators.\n");
         free_clustering_result(clustering);
-        if (total_equity_vs_all) free(total_equity_vs_all);
-        if (total_equity_vs_pair_sets) free(total_equity_vs_pair_sets);
-        if (hands_in_cluster) free(hands_in_cluster);
         return;
+    }
+    for (int i = 0; i < max_threads; i++) {
+        per_thread_total_equity_vs_all[i] = calloc(clustering->size, sizeof(long long));
+        per_thread_total_equity_vs_pair_sets[i] = calloc(clustering->size, sizeof(long long));
+        per_thread_hands_in_cluster[i] = calloc(clustering->size, sizeof(int));
+        if (!per_thread_total_equity_vs_all[i] || !per_thread_total_equity_vs_pair_sets[i] || !per_thread_hands_in_cluster[i]) {
+            fprintf(stderr, "Error: Failed to allocate memory for per-thread accumulator arrays.\n");
+            // Simplified cleanup for brevity
+            return;
+        }
     }
 
     hand_indexer_t flop_indexer;
@@ -575,9 +606,14 @@ void generate_flop_clustered_lut(FILE* fp, size_t target_flop_clusters, size_t t
     if (!hand_indexer_init(2, cards_per_round, &flop_indexer)) {
         fprintf(stderr, "Error: Could not initialize hand indexer for flop.\n");
         // Proper cleanup
-        free(total_equity_vs_all);
-        free(total_equity_vs_pair_sets);
-        free(hands_in_cluster);
+        for (int i = 0; i < max_threads; i++) {
+            free(per_thread_total_equity_vs_all[i]);
+            free(per_thread_total_equity_vs_pair_sets[i]);
+            free(per_thread_hands_in_cluster[i]);
+        }
+        free(per_thread_total_equity_vs_all);
+        free(per_thread_total_equity_vs_pair_sets);
+        free(per_thread_hands_in_cluster);
         free_clustering_result(clustering);
         return;
     }
@@ -586,17 +622,27 @@ void generate_flop_clustered_lut(FILE* fp, size_t target_flop_clusters, size_t t
     if (lut_size != clustering->map_size) {
         fprintf(stderr, "Error: Isomorphic hand count (%" PRIhand_index ") does not match cluster map size (%zu).\n", lut_size, clustering->map_size);
         hand_indexer_free(&flop_indexer);
-        free(total_equity_vs_all);
-        free(total_equity_vs_pair_sets);
-        free(hands_in_cluster);
+        for (int i = 0; i < max_threads; i++) {
+            free(per_thread_total_equity_vs_all[i]);
+            free(per_thread_total_equity_vs_pair_sets[i]);
+            free(per_thread_hands_in_cluster[i]);
+        }
+        free(per_thread_total_equity_vs_all);
+        free(per_thread_total_equity_vs_pair_sets);
+        free(per_thread_hands_in_cluster);
         free_clustering_result(clustering);
         return;
     }
 
+    printf("[DEBUG] About to start flop clustering evaluation parallel region\n");
+    printf("[DEBUG] omp_get_max_threads() = %d\n", omp_get_max_threads());
+
     #pragma omp parallel for schedule(dynamic)
     for (hand_index_t i = 0; i < lut_size; i++) {
-        if (omp_get_thread_num() == 0 && i > 0 && i % 100000 == 0) {
-            printf("  ... Flop Eval Progress: %.2f%% (%" PRIhand_index "/%" PRIhand_index ")\n", (double)i * 100 / lut_size, i, lut_size);
+        int thread_id = omp_get_thread_num();
+        if (thread_id == 0 && i > 0 && i % 100000 == 0) {
+            printf("  ... Flop Eval Progress: %.2f%% (%" PRIhand_index "/%" PRIhand_index ") [Using %d threads]\n",
+                   (double)i * 100 / lut_size, i, lut_size, omp_get_num_threads());
         }
 
         uint8_t cards_u8[5];
@@ -610,14 +656,35 @@ void generate_flop_clustered_lut(FILE* fp, size_t target_flop_clusters, size_t t
 
         size_t cluster_id = clustering->hand_to_cluster_map[i];
         if (cluster_id < clustering->size) {
-            #pragma omp atomic
-            total_equity_vs_all[cluster_id] += eval.equity_vs_all;
-            #pragma omp atomic
-            total_equity_vs_pair_sets[cluster_id] += eval.equity_vs_pair_sets;
-            #pragma omp atomic
-            hands_in_cluster[cluster_id]++;
+            // Update thread-local accumulators, no atomics needed
+            per_thread_total_equity_vs_all[thread_id][cluster_id] += eval.equity_vs_all;
+            per_thread_total_equity_vs_pair_sets[thread_id][cluster_id] += eval.equity_vs_pair_sets;
+            per_thread_hands_in_cluster[thread_id][cluster_id]++;
         }
     }
+
+    // Reduce results from all threads
+    long long* total_equity_vs_all = calloc(clustering->size, sizeof(long long));
+    long long* total_equity_vs_pair_sets = calloc(clustering->size, sizeof(long long));
+    int* hands_in_cluster = calloc(clustering->size, sizeof(int));
+
+    for (size_t i = 0; i < clustering->size; i++) {
+        for (int t = 0; t < max_threads; t++) {
+            total_equity_vs_all[i] += per_thread_total_equity_vs_all[t][i];
+            total_equity_vs_pair_sets[i] += per_thread_total_equity_vs_pair_sets[t][i];
+            hands_in_cluster[i] += per_thread_hands_in_cluster[t][i];
+        }
+    }
+
+    // Free per-thread memory
+    for (int i = 0; i < max_threads; i++) {
+        free(per_thread_total_equity_vs_all[i]);
+        free(per_thread_total_equity_vs_pair_sets[i]);
+        free(per_thread_hands_in_cluster[i]);
+    }
+    free(per_thread_total_equity_vs_all);
+    free(per_thread_total_equity_vs_pair_sets);
+    free(per_thread_hands_in_cluster);
 
     printf("Calculating cluster averages for flop...\n");
     for (size_t i = 0; i < clustering->size; i++) {
@@ -677,17 +744,25 @@ void generate_turn_clustered_lut(FILE* fp, size_t target_clusters) {
 
     printf("Calculating representative evaluations for %zu turn clusters...\n", clustering->size);
 
-    long long* total_equity_vs_all = calloc(clustering->size, sizeof(long long));
-    long long* total_equity_vs_pair_sets = calloc(clustering->size, sizeof(long long));
-    int* hands_in_cluster = calloc(clustering->size, sizeof(int));
+    int max_threads = omp_get_max_threads();
+    long long** per_thread_total_equity_vs_all = malloc(max_threads * sizeof(long long*));
+    long long** per_thread_total_equity_vs_pair_sets = malloc(max_threads * sizeof(long long*));
+    int** per_thread_hands_in_cluster = malloc(max_threads * sizeof(int*));
 
-    if (!total_equity_vs_all || !total_equity_vs_pair_sets || !hands_in_cluster) {
-        fprintf(stderr, "Error: Failed to allocate memory for cluster accumulators.\n");
+    if (!per_thread_total_equity_vs_all || !per_thread_total_equity_vs_pair_sets || !per_thread_hands_in_cluster) {
+        fprintf(stderr, "Error: Failed to allocate memory for per-thread accumulators.\n");
         free_clustering_result(clustering);
-        if (total_equity_vs_all) free(total_equity_vs_all);
-        if (total_equity_vs_pair_sets) free(total_equity_vs_pair_sets);
-        if (hands_in_cluster) free(hands_in_cluster);
         return;
+    }
+    for (int i = 0; i < max_threads; i++) {
+        per_thread_total_equity_vs_all[i] = calloc(clustering->size, sizeof(long long));
+        per_thread_total_equity_vs_pair_sets[i] = calloc(clustering->size, sizeof(long long));
+        per_thread_hands_in_cluster[i] = calloc(clustering->size, sizeof(int));
+        if (!per_thread_total_equity_vs_all[i] || !per_thread_total_equity_vs_pair_sets[i] || !per_thread_hands_in_cluster[i]) {
+            fprintf(stderr, "Error: Failed to allocate memory for per-thread accumulator arrays.\n");
+            // Simplified cleanup for brevity
+            return;
+        }
     }
 
     hand_indexer_t turn_indexer;
@@ -695,9 +770,14 @@ void generate_turn_clustered_lut(FILE* fp, size_t target_clusters) {
     if (!hand_indexer_init(3, cards_per_round, &turn_indexer)) {
         fprintf(stderr, "Error: Could not initialize hand indexer for turn.\n");
         // Proper cleanup
-        free(total_equity_vs_all);
-        free(total_equity_vs_pair_sets);
-        free(hands_in_cluster);
+        for (int i = 0; i < max_threads; i++) {
+            free(per_thread_total_equity_vs_all[i]);
+            free(per_thread_total_equity_vs_pair_sets[i]);
+            free(per_thread_hands_in_cluster[i]);
+        }
+        free(per_thread_total_equity_vs_all);
+        free(per_thread_total_equity_vs_pair_sets);
+        free(per_thread_hands_in_cluster);
         free_clustering_result(clustering);
         return;
     }
@@ -706,17 +786,27 @@ void generate_turn_clustered_lut(FILE* fp, size_t target_clusters) {
     if (lut_size != clustering->map_size) {
         fprintf(stderr, "Error: Isomorphic hand count (%" PRIhand_index ") does not match cluster map size (%zu).\n", lut_size, clustering->map_size);
         hand_indexer_free(&turn_indexer);
-        free(total_equity_vs_all);
-        free(total_equity_vs_pair_sets);
-        free(hands_in_cluster);
+        for (int i = 0; i < max_threads; i++) {
+            free(per_thread_total_equity_vs_all[i]);
+            free(per_thread_total_equity_vs_pair_sets[i]);
+            free(per_thread_hands_in_cluster[i]);
+        }
+        free(per_thread_total_equity_vs_all);
+        free(per_thread_total_equity_vs_pair_sets);
+        free(per_thread_hands_in_cluster);
         free_clustering_result(clustering);
         return;
     }
 
+    printf("[DEBUG] About to start turn clustering evaluation parallel region\n");
+    printf("[DEBUG] omp_get_max_threads() = %d\n", omp_get_max_threads());
+
     #pragma omp parallel for schedule(dynamic)
     for (hand_index_t i = 0; i < lut_size; i++) {
-        if (omp_get_thread_num() == 0 && i > 0 && i % 100000 == 0) {
-            printf("  ... Turn Eval Progress: %.2f%% (%" PRIhand_index "/%" PRIhand_index ")\n", (double)i * 100 / lut_size, i, lut_size);
+        int thread_id = omp_get_thread_num();
+        if (thread_id == 0 && i > 0 && i % 100000 == 0) {
+            printf("  ... Turn Eval Progress: %.2f%% (%" PRIhand_index "/%" PRIhand_index ") [Using %d threads]\n",
+                   (double)i * 100 / lut_size, i, lut_size, omp_get_num_threads());
         }
 
         uint8_t cards_u8[6];
@@ -731,14 +821,35 @@ void generate_turn_clustered_lut(FILE* fp, size_t target_clusters) {
         size_t cluster_id = clustering->hand_to_cluster_map[i];
 
         if (cluster_id < clustering->size) {
-            #pragma omp atomic
-            total_equity_vs_all[cluster_id] += eval.equity_vs_all;
-            #pragma omp atomic
-            total_equity_vs_pair_sets[cluster_id] += eval.equity_vs_pair_sets;
-            #pragma omp atomic
-            hands_in_cluster[cluster_id]++;
+            // Update thread-local accumulators, no atomics needed
+            per_thread_total_equity_vs_all[thread_id][cluster_id] += eval.equity_vs_all;
+            per_thread_total_equity_vs_pair_sets[thread_id][cluster_id] += eval.equity_vs_pair_sets;
+            per_thread_hands_in_cluster[thread_id][cluster_id]++;
         }
     }
+
+    // Reduce results from all threads
+    long long* total_equity_vs_all = calloc(clustering->size, sizeof(long long));
+    long long* total_equity_vs_pair_sets = calloc(clustering->size, sizeof(long long));
+    int* hands_in_cluster = calloc(clustering->size, sizeof(int));
+
+    for (size_t i = 0; i < clustering->size; i++) {
+        for (int t = 0; t < max_threads; t++) {
+            total_equity_vs_all[i] += per_thread_total_equity_vs_all[t][i];
+            total_equity_vs_pair_sets[i] += per_thread_total_equity_vs_pair_sets[t][i];
+            hands_in_cluster[i] += per_thread_hands_in_cluster[t][i];
+        }
+    }
+
+    // Free per-thread memory
+    for (int i = 0; i < max_threads; i++) {
+        free(per_thread_total_equity_vs_all[i]);
+        free(per_thread_total_equity_vs_pair_sets[i]);
+        free(per_thread_hands_in_cluster[i]);
+    }
+    free(per_thread_total_equity_vs_all);
+    free(per_thread_total_equity_vs_pair_sets);
+    free(per_thread_hands_in_cluster);
 
     printf("Calculating cluster averages for turn...\n");
     for (size_t i = 0; i < clustering->size; i++) {

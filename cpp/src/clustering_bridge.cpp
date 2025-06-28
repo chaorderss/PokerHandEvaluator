@@ -10,6 +10,9 @@
 #include <algorithm>
 #include <iostream>
 #include <random>
+#include <thread>
+#include <cstdio>
+#include <omp.h>
 
 extern "C" {
 #include "../include/phevaluator/evaluator_holdem_potential.h"
@@ -76,15 +79,18 @@ namespace {
 
 clustering_result_t* generate_flop_clustering(size_t target_flop_clusters, size_t intermediate_turn_clusters) {
     try {
-        const size_t thread_count = 4;
+        int num_threads = std::thread::hardware_concurrency();
+        omp_set_num_threads(num_threads);
+        printf("[C++ Bridge] OpenMP threads configured to use %d cores.\n", omp_get_max_threads());
+
         const size_t max_iterations = 200;
 
-        printf("Generating flop clustering with %zu clusters (using %zu intermediate turn clusters)...\n",
+        printf("Generating flop clustering with %zu clusters (using %zu intermediate turn_clusters)...\n",
                target_flop_clusters, intermediate_turn_clusters);
 
         // Calculate equity and turn histograms first, as they are prerequisites for flop clustering
-        std::vector<int32_t> equity_vec = poker::calculate_equity();
-        auto turn_histograms = poker::calc_turn_histograms(equity_vec);
+        auto equities = poker::calculate_equity();
+        auto turn_histograms = poker::calc_turn_histograms(equities);
 
         printf("Running k-means for intermediate turn clustering (%zu clusters)...\n", intermediate_turn_clusters);
         auto turn_clustering = poker::calc_init_turn_clus_by_kmeans_plusplus(
@@ -92,7 +98,7 @@ clustering_result_t* generate_flop_clustering(size_t target_flop_clusters, size_
 
         for (size_t i = 0; i < max_iterations; i++) {
             size_t updates = poker::turn_kmeans_once(
-                &turn_clustering, turn_histograms, intermediate_turn_clusters, thread_count);
+                &turn_clustering, turn_histograms, intermediate_turn_clusters);
             printf("  [Turn k-means for Flop] Iteration %zu, updates: %zu\n", i + 1, updates);
             if (updates == 0) break;
         }
@@ -109,7 +115,7 @@ clustering_result_t* generate_flop_clustering(size_t target_flop_clusters, size_
         printf("Running k-means for final flop clustering (%zu clusters)...\n", target_flop_clusters);
         for (size_t i = 0; i < max_iterations; i++) {
             size_t updates = poker::flop_kmeans_once(
-                &flop_clustering, flop_histograms, turn_cluster_distances, target_flop_clusters, thread_count);
+                &flop_clustering, flop_histograms, turn_cluster_distances, target_flop_clusters);
             printf("  [Flop k-means] Iteration %zu, updates: %zu\n", i + 1, updates);
             if (updates == 0) break;
         }
@@ -147,14 +153,17 @@ clustering_result_t* generate_flop_clustering(size_t target_flop_clusters, size_
 
 clustering_result_t* generate_turn_clustering(size_t target_clusters) {
     try {
-        const size_t thread_count = 4;
+        int num_threads = std::thread::hardware_concurrency();
+        omp_set_num_threads(num_threads);
+        printf("[C++ Bridge] OpenMP threads configured to use %d cores.\n", omp_get_max_threads());
+
         const size_t max_iterations = 200;
 
         printf("Generating turn clustering with %zu clusters...\n", target_clusters);
 
         // Calculate equity and turn histograms
-        std::vector<int32_t> equity_vec = poker::calculate_equity();
-        auto turn_histograms = poker::calc_turn_histograms(equity_vec);
+        auto equities = poker::calculate_equity();
+        auto turn_histograms = poker::calc_turn_histograms(equities);
 
         // Initialize turn clustering with k-means++
         auto turn_clustering = poker::calc_init_turn_clus_by_kmeans_plusplus(
@@ -163,8 +172,8 @@ clustering_result_t* generate_turn_clustering(size_t target_clusters) {
         // Iterate k-means until convergence
         for (size_t iter = 0; iter < max_iterations; iter++) {
             size_t update_cnt = poker::turn_kmeans_once(
-                &turn_clustering, turn_histograms, target_clusters, thread_count);
-            printf("Turn k-means iteration %zu: updated %zu clusters\n", iter, update_cnt);
+                &turn_clustering, turn_histograms, target_clusters);
+            printf("  [Turn k-means] Iteration %zu: updated %zu\n", iter + 1, update_cnt);
             if (update_cnt == 0) break;
         }
 
@@ -186,8 +195,7 @@ clustering_result_t* generate_turn_clustering(size_t target_clusters) {
         // to leverage OpenMP with the existing C evaluation functions. We have allocated
         // the space in result->data, which will be filled by the caller.
 
-        printf("Turn clustering completed: %zu hands mapped to %zu clusters\n",
-               result->map_size, result->size);
+        printf("Turn clustering completed.\n");
 
         return result;
 
