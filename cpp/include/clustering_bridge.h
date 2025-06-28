@@ -24,7 +24,13 @@ typedef struct {
 } clustering_result_t;
 
 // Clustering generation functions
-clustering_result_t* generate_flop_clustering(size_t target_clusters);
+// Generates clustering for flop hands.
+// `target_clusters` is the desired number of flop clusters.
+// `intermediate_turn_clusters` is the number of turn clusters to use for building flop histograms.
+clustering_result_t* generate_flop_clustering(size_t target_clusters, size_t intermediate_turn_clusters);
+
+// Generates clustering for turn hands.
+// `target_clusters` is the desired number of turn clusters.
 clustering_result_t* generate_turn_clustering(size_t target_clusters);
 
 // Utility functions

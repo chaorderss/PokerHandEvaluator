@@ -14,7 +14,7 @@
  *  limitations under the License.
  */
 
-#include <phevaluator/phevaluator.h>
+#include "../include/phevaluator/phevaluator.h"
 
 #include "hash.h"
 extern "C" {

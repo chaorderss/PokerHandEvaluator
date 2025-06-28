@@ -14,7 +14,7 @@
  *  limitations under the License.
  */
 
-#include <phevaluator/rank.h>
+#include "../include/phevaluator/rank.h"
 
 #include "tables.h"
 

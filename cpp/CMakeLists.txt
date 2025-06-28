@@ -19,6 +19,74 @@ option(BUILD_TESTS "Build test ON/OFF" OFF)
 option(BUILD_EXAMPLES "Build examples ON/OFF" OFF)
 
 # ==============================================================================
+# == Hand Strength LUT Generation
+# ==============================================================================
+
+# 1. Executable to generate rank distribution
+add_executable(generate_rank_distribution_exec
+    src/generate_rank_distribution.c
+    src/evaluator7.c
+    src/dptables.c
+    src/tables_bitwise.c
+    src/hashtable7.c
+    src/hashtable.c
+    src/hash.c
+    src/7462.c
+)
+target_include_directories(generate_rank_distribution_exec PRIVATE include)
+
+# 2. Custom command to run the executable and then the Python script
+set(RANK_DIST_FILE ${CMAKE_CURRENT_BINARY_DIR}/rank_distribution.txt)
+set(STRENGTH_LUT_FILE ${CMAKE_CURRENT_SOURCE_DIR}/include/phevaluator/strength_lut.h)
+set(STRENGTH_LUT_BACKUP ${CMAKE_CURRENT_SOURCE_DIR}/../strength_lut_backup.h)
+set(PYTHON_SCRIPT ${CMAKE_CURRENT_SOURCE_DIR}/src/create_strength_lut.py)
+
+# Check if backup strength LUT exists, if not generate it
+if(NOT EXISTS ${STRENGTH_LUT_BACKUP})
+    message(STATUS "Backup strength_lut.h not found, will generate it during build")
+    set(SHOULD_GENERATE_STRENGTH_LUT TRUE)
+else()
+    message(STATUS "Backup strength_lut.h already exists, will copy to include directory")
+    set(SHOULD_GENERATE_STRENGTH_LUT FALSE)
+endif()
+
+if(SHOULD_GENERATE_STRENGTH_LUT)
+    add_custom_command(
+        OUTPUT ${STRENGTH_LUT_BACKUP}
+        # First, run the C program to generate the distribution file
+        COMMAND $<TARGET_FILE:generate_rank_distribution_exec> > ${RANK_DIST_FILE}
+        # Then, run the Python script to generate the header from the distribution file
+        COMMAND python3 ${PYTHON_SCRIPT}
+        # Copy the generated file to backup location (outside build directory)
+        COMMAND ${CMAKE_COMMAND} -E copy ${STRENGTH_LUT_FILE} ${STRENGTH_LUT_BACKUP}
+        DEPENDS generate_rank_distribution_exec
+        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+        COMMENT "Generating hand strength lookup table (strength_lut.h)... This may take a very long time."
+        VERBATIM
+    )
+endif()
+
+# Always copy from backup location to include directory
+add_custom_command(
+    OUTPUT ${STRENGTH_LUT_FILE}
+    COMMAND ${CMAKE_COMMAND} -E copy ${STRENGTH_LUT_BACKUP} ${STRENGTH_LUT_FILE}
+    DEPENDS ${STRENGTH_LUT_BACKUP}
+    COMMENT "Copying backup strength_lut.h to include directory"
+    VERBATIM
+)
+
+# 3. Custom target to trigger the generation
+add_custom_target(generate_strength_lut
+    DEPENDS ${STRENGTH_LUT_FILE}
+)
+
+# 4. Create an object library for the strength LUT to avoid multiple definitions
+add_library(strength_lut_obj OBJECT ${STRENGTH_LUT_FILE})
+set_target_properties(strength_lut_obj PROPERTIES LINKER_LANGUAGE C)
+
+# 5. Note: strength_lut_backup.h is stored outside the build directory and will not be deleted during clean
+
+# ==============================================================================
 # == Lookup Table Generator for Hold'em Potential
 # ==============================================================================
 # First build poker-hand-clustering objects
@@ -51,6 +119,15 @@ if(CLUSTERING_SOURCES)
     # Set C++ standard for C++ files only
     set_target_properties(poker_clustering PROPERTIES CXX_STANDARD 17)
     target_compile_options(poker_clustering PRIVATE -O3 -fPIC)
+
+    # Find OpenMP for C++
+    find_package(OpenMP)
+    if(OpenMP_FOUND)
+        message(STATUS "OpenMP found, enabling parallel build for clustering library.")
+        target_link_libraries(poker_clustering PRIVATE OpenMP::OpenMP_CXX)
+        target_compile_options(poker_clustering PRIVATE "-fopenmp")
+    endif()
+
     set(CLUSTERING_AVAILABLE TRUE)
 else()
     message(WARNING "No clustering sources found, building without clustering support")
@@ -128,8 +205,11 @@ add_library(pheval SHARED
   src/evaluator_holdem_potential.c
   ${CMAKE_CURRENT_SOURCE_DIR}/src/evaluator_holdem_potential_tables.h  # 暂时注释掉避免CMake卡住
 )
+# Add dependency on strength LUT generation
+add_dependencies(pheval generate_strength_lut)
+
 target_include_directories(pheval PUBLIC
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../include>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>
 )
 target_compile_options(pheval PUBLIC -O3)
@@ -141,8 +221,7 @@ set(PUB_HEADERS include/phevaluator/phevaluator.h
 set_target_properties(pheval PROPERTIES
     VERSION ${PROJECT_VERSION}
     PUBLIC_HEADER "${PUB_HEADERS}")
-target_link_libraries(pheval PUBLIC strength_lut_obj)
-target_link_libraries(pheval PRIVATE handisomorphism)
+target_link_libraries(pheval PRIVATE strength_lut_obj handisomorphism)
 
 if (BUILD_CARD5)
   add_library(pheval5 STATIC

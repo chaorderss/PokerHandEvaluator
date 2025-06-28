@@ -8,6 +8,8 @@
 #include <cstdint>
 #include <cstring>
 #include <algorithm>
+#include <iostream>
+#include <random>
 
 extern "C" {
 #include "../include/phevaluator/evaluator_holdem_potential.h"
@@ -46,7 +48,7 @@ extern "C" {
     } clustering_result_t;
 
     // Function declarations for C interface
-    clustering_result_t* generate_flop_clustering(size_t target_clusters);
+    clustering_result_t* generate_flop_clustering(size_t target_flop_clusters, size_t intermediate_turn_clusters);
     clustering_result_t* generate_turn_clustering(size_t target_clusters);
     void free_clustering_result(clustering_result_t* result);
     int get_clustered_evaluation(clustering_result_t* clustering, size_t hand_index, holdem_evaluation_t* result);
@@ -72,54 +74,52 @@ namespace {
 
 // C interface implementations
 
-clustering_result_t* generate_flop_clustering(size_t target_clusters) {
+clustering_result_t* generate_flop_clustering(size_t target_flop_clusters, size_t intermediate_turn_clusters) {
     try {
-        // Step 1: Calculate turn clustering first (as required by the algorithm)
-        const size_t turn_clus_size = std::max(target_clusters * 5, (size_t)5000);  // Turn needs more clusters
         const size_t thread_count = 4;
         const size_t max_iterations = 200;
 
-        printf("Generating turn clustering with %zu clusters...\n", turn_clus_size);
+        printf("Generating flop clustering with %zu clusters (using %zu intermediate turn clusters)...\n",
+               target_flop_clusters, intermediate_turn_clusters);
 
-        // Calculate equity and turn histograms
+        // Calculate equity and turn histograms first, as they are prerequisites for flop clustering
         std::vector<int32_t> equity_vec = poker::calculate_equity();
         auto turn_histograms = poker::calc_turn_histograms(equity_vec);
 
-        // Initialize turn clustering with k-means++
+        printf("Running k-means for intermediate turn clustering (%zu clusters)...\n", intermediate_turn_clusters);
         auto turn_clustering = poker::calc_init_turn_clus_by_kmeans_plusplus(
-            turn_histograms, turn_clus_size);
+            turn_histograms, intermediate_turn_clusters);
 
-        // Iterate turn k-means until convergence
-        for (size_t iter = 0; iter < max_iterations; iter++) {
-            size_t update_cnt = poker::turn_kmeans_once(
-                &turn_clustering, turn_histograms, turn_clus_size, thread_count);
-            printf("Turn k-means iteration %zu: updated %zu clusters\n", iter, update_cnt);
-            if (update_cnt == 0) break;
+        for (size_t i = 0; i < max_iterations; i++) {
+            size_t updates = poker::turn_kmeans_once(
+                &turn_clustering, turn_histograms, intermediate_turn_clusters, thread_count);
+            printf("  [Turn k-means for Flop] Iteration %zu, updates: %zu\n", i + 1, updates);
+            if (updates == 0) break;
         }
 
-        // Step 2: Generate flop clustering based on turn clustering
-        printf("Generating flop clustering with %zu clusters...\n", target_clusters);
-
+        // Now, continue with flop clustering
+        printf("Calculating flop histograms...\n");
         auto turn_cluster_distances = poker::turn_cluster_distance(turn_histograms, turn_clustering);
         auto flop_histograms = poker::calc_flop_histograms(turn_clustering);
-        auto flop_clustering = poker::calc_init_flop_clus_by_kmeans_plusplus(
-            flop_histograms, turn_cluster_distances, target_clusters);
 
-        // Iterate flop k-means until convergence
-        for (size_t iter = 0; iter < max_iterations; iter++) {
-            size_t update_cnt = poker::flop_kmeans_once(
-                &flop_clustering, flop_histograms, turn_cluster_distances,
-                target_clusters, thread_count);
-            printf("Flop k-means iteration %zu: updated %zu clusters\n", iter, update_cnt);
-            if (update_cnt == 0) break;
+        printf("Running k-means++ for flop clustering initialization...\n");
+        auto flop_clustering = poker::calc_init_flop_clus_by_kmeans_plusplus(
+            flop_histograms, turn_cluster_distances, target_flop_clusters);
+
+        printf("Running k-means for final flop clustering (%zu clusters)...\n", target_flop_clusters);
+        for (size_t i = 0; i < max_iterations; i++) {
+            size_t updates = poker::flop_kmeans_once(
+                &flop_clustering, flop_histograms, turn_cluster_distances, target_flop_clusters, thread_count);
+            printf("  [Flop k-means] Iteration %zu, updates: %zu\n", i + 1, updates);
+            if (updates == 0) break;
         }
 
         // Step 3: Create the result structure
         clustering_result_t* result = new clustering_result_t;
 
         // Allocate cluster data
-        result->size = target_clusters;
-        result->data = new clustered_evaluation_t[target_clusters];
+        result->size = target_flop_clusters;
+        result->data = new clustered_evaluation_t[target_flop_clusters];
 
         // Allocate hand-to-cluster mapping
         result->map_size = flop_clustering.size();
@@ -130,18 +130,9 @@ clustering_result_t* generate_flop_clustering(size_t target_clusters) {
             result->hand_to_cluster_map[i] = flop_clustering[i];
         }
 
-        // Calculate representative evaluations for each cluster
-        std::vector<std::vector<holdem_evaluation_t>> cluster_evaluations(target_clusters);
-
-        // For now, use simplified cluster representatives
-        // In a full implementation, you'd calculate the centroid evaluation for each cluster
-        for (size_t cluster_id = 0; cluster_id < target_clusters; cluster_id++) {
-            holdem_evaluation_t representative;
-            representative.equity_vs_all = 5000;  // Default neutral value
-            representative.equity_vs_pair_sets = 2500;  // Default value
-
-            result->data[cluster_id] = convert_evaluation(representative, cluster_id);
-        }
+        // The representative evaluations for each cluster will be calculated in the C code
+        // to leverage OpenMP with the existing C evaluation functions. We have allocated
+        // the space in result->data, which will be filled by the caller.
 
         printf("Flop clustering completed: %zu hands mapped to %zu clusters\n",
                result->map_size, result->size);
@@ -191,14 +182,9 @@ clustering_result_t* generate_turn_clustering(size_t target_clusters) {
             result->hand_to_cluster_map[i] = turn_clustering[i];
         }
 
-        // Calculate representative evaluations for each cluster
-        for (size_t cluster_id = 0; cluster_id < target_clusters; cluster_id++) {
-            holdem_evaluation_t representative;
-            representative.equity_vs_all = 5000;  // Default neutral value
-            representative.equity_vs_pair_sets = 2500;  // Default value
-
-            result->data[cluster_id] = convert_evaluation(representative, cluster_id);
-        }
+        // The representative evaluations for each cluster will be calculated in the C code
+        // to leverage OpenMP with the existing C evaluation functions. We have allocated
+        // the space in result->data, which will be filled by the caller.
 
         printf("Turn clustering completed: %zu hands mapped to %zu clusters\n",
                result->map_size, result->size);
@@ -221,17 +207,14 @@ void free_clustering_result(clustering_result_t* result) {
 
 int get_clustered_evaluation(clustering_result_t* clustering, size_t hand_index, holdem_evaluation_t* result) {
     if (!clustering || !result || hand_index >= clustering->map_size) {
-        return -1;  // Error
+        return 0; // Failure
     }
-
     size_t cluster_id = clustering->hand_to_cluster_map[hand_index];
     if (cluster_id >= clustering->size) {
-        return -1;  // Error
+        return 0; // Failure
     }
-
-    clustered_evaluation_t* cluster_data = &clustering->data[cluster_id];
-    result->equity_vs_all = cluster_data->equity_vs_all;
-    result->equity_vs_pair_sets = cluster_data->equity_vs_pair_sets;
-
-    return 0;  // Success
+    clustered_evaluation_t* cluster_eval = &clustering->data[cluster_id];
+    result->equity_vs_all = cluster_eval->equity_vs_all;
+    result->equity_vs_pair_sets = cluster_eval->equity_vs_pair_sets;
+    return 1; // Success
 }
