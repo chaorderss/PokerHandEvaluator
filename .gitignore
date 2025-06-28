@@ -33,3 +33,23 @@
 .vscode
 build/
 .github/
+# Large lookup tables and generated files (prevent adding files > 10MB)
+**/evaluator_holdem_potential_tables.h
+**/strength_lut.h
+**/rank_distribution.txt
+**/*.lut
+**/*.dat
+**/generated_tables/
+
+# Binary files and build artifacts
+**/*.a
+**/*.so
+**/*.o
+**/*.exe
+**/build/
+**/cmake-build-*/
+
+# Large data files
+**/*[0-9]MB.*
+**/*[0-9][0-9]MB.*
+**/*[0-9][0-9][0-9]MB.*

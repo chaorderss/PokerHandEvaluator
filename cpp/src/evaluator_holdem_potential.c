@@ -264,6 +264,14 @@ static int get_stage(int card_count) {
     return UNKNOWN_STAGE;
 }
 
+// Public function for external use (e.g., generate_potential_tables.c)
+int get_strength_from_rank(int rank) {
+    if (rank > 0 && rank <= 7462) {
+        return hand_strength_lut[rank];
+    }
+    return 5000;  // Default middle value for invalid ranks
+}
+
 static int get_hand_strength(int* cards, int card_count) {
     int rank;
     switch (card_count) {
@@ -550,17 +558,8 @@ holdem_evaluation_t evaluate_holdem_multidimensional(int* cards, int card_count)
             result = flop_multidimensional_lut[hole_idx][board_idx];
         }
     } else if (card_count == 6) {
-        // Turn: Use the new high-precision LUT
-        // Note: The hole index depends on the 4-card board for suit isomorphism
-        int hole_idx = get_precise_hole_index_c(cards[0], cards[1], cards + 2, 4);
-        // The board index for the LUT still depends on the original 3 flop cards
-        int board_idx = get_canonical_flop_index(cards[2], cards[3], cards[4]);
-        int turn_rank = (cards[5] / 4);
-
-        if (hole_idx >= 0 && hole_idx < 1326 && board_idx >= 0 && board_idx < 1755 &&
-            turn_rank >= 0 && turn_rank < 13) {
-            result = turn_multidimensional_lut[hole_idx][board_idx][turn_rank];
-        }
+        // Turn: Use the compressed high-precision LUT
+        result = lookup_turn_multidimensional(cards[0], cards[1], cards[2], cards[3], cards[4], cards[5]);
     } else if (card_count == 7) {
         // River: Use direct rank mapping
         int hand_rank = evaluate_7cards(cards[0], cards[1], cards[2], cards[3], cards[4], cards[5], cards[6]);
@@ -630,7 +629,7 @@ holdem_evaluation_t evaluate_holdem_multidimensional_nolut(int* cards, int card_
  * @brief Legacy compatibility function using lookup tables
  */
 int evaluate_holdem_with_potential(int* cards, int card_count) {
-    holdem_evaluation_t result = evaluate_holdem_multidimensional(cards, card_count);
+    holdem_evaluation_t result = evaluate_holdem_multidimensional_nolut(cards, card_count);
     return result.equity_vs_all;
 }
 
@@ -804,4 +803,88 @@ static int calculate_equity_vs_range(int* my_cards, int card_count, bool (*is_in
     int final_equity = (int)((total_equity / matchups) * 10000);
     free(opponent_hands);
     return final_equity;
+}
+
+// 比较函数（已在第200行定义）
+
+// 新增：4张牌精确索引计算函数
+int get_precise_turn_index(int h1, int h2, int c1, int c2, int c3, int c4) {
+    // 使用完整的6张牌进行花色同构计算
+    int all_cards[6] = {h1, h2, c1, c2, c3, c4};
+    uint64_t hash = 0;
+
+    // 排序后计算哈希值（使用已定义的比较函数）
+    qsort(all_cards, 6, sizeof(int), compare_cards_desc);
+
+    for (int i = 0; i < 6; i++) {
+        hash = hash * 53 + all_cards[i];
+    }
+
+    return hash % MAX_COMPRESSED_TURN_COMBINATIONS;
+}
+
+// 新增：压缩Turn LUT查询函数
+holdem_evaluation_t lookup_turn_multidimensional(int h1, int h2, int c1, int c2, int c3, int c4) {
+    // 计算查询键
+    int flop_board[3] = {c1, c2, c3};
+    uint16_t hole_index = get_precise_hole_index_c(h1, h2, flop_board, 3);
+    uint16_t flop_texture = get_canonical_flop_index(c1, c2, c3);
+    uint8_t turn_rank = c4 / 4;
+
+    // 计算转牌花色影响
+    int turn_suits[4] = {0};
+    turn_suits[c1 % 4]++;
+    turn_suits[c2 % 4]++;
+    turn_suits[c3 % 4]++;
+    turn_suits[c4 % 4]++;
+
+    uint8_t suit_impact = 0;
+    for (int i = 0; i < 4; i++) {
+        if (turn_suits[i] >= 3) suit_impact |= (1 << i);
+    }
+
+    // DEBUG: 打印查询参数 (仅前几次)
+    static int debug_count = 0;
+    if (debug_count < 3) {
+        printf("DEBUG Turn LUT查询 #%d:\n", debug_count);
+        printf("  卡牌: ");
+        print_card(h1); print_card(h2); print_card(c1); print_card(c2); print_card(c3); print_card(c4);
+        printf("\n");
+        printf("  hole_index=%u, flop_texture=%u, turn_rank=%u, suit_impact=%u\n",
+               hole_index, flop_texture, turn_rank, suit_impact);
+        printf("  LUT大小: %u\n", turn_lut_size);
+
+        // 显示前几个key
+        printf("  前5个LUT keys:\n");
+        for (int i = 0; i < 5 && i < turn_lut_size; i++) {
+            const compressed_turn_key_t* key = &turn_lut_key_map[i];
+            printf("    [%d]: hole=%u, flop=%u, rank=%u, suit=%u\n",
+                   i, key->hole_index_3card, key->flop_texture_index, key->turn_rank, key->turn_suit_impact);
+        }
+        debug_count++;
+    }
+
+    // 在压缩LUT中查找匹配项
+    for (uint32_t i = 0; i < turn_lut_size; i++) {
+        const compressed_turn_key_t* key = &turn_lut_key_map[i];
+        if (key->hole_index_3card == hole_index &&
+            key->flop_texture_index == flop_texture &&
+            key->turn_rank == turn_rank &&
+            key->turn_suit_impact == suit_impact) {
+            if (debug_count <= 3) {
+                printf("  -> 找到匹配项: 索引%u, 结果(%d, %d)\n", i,
+                       turn_multidimensional_lut_compressed[i].equity_vs_all,
+                       turn_multidimensional_lut_compressed[i].equity_vs_pair_sets);
+            }
+            return turn_multidimensional_lut_compressed[i];
+        }
+    }
+
+    // 如果未找到，fallback到非LUT版本计算
+    if (debug_count <= 3) {
+        printf("  -> 未找到匹配项，fallback到非LUT计算\n");
+    }
+
+    int cards[6] = {h1, h2, c1, c2, c3, c4};
+    return evaluate_holdem_multidimensional_nolut(cards, 6);
 }

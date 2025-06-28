@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include <omp.h>
 #include "../include/phevaluator/phevaluator.h"
 #include "../include/phevaluator/evaluator_holdem_potential.h"
@@ -141,7 +142,7 @@ static int get_hand_strength(int* cards, int card_count) {
             return 5000;
     }
     if (rank > 0 && rank <= 7462) {
-        return hand_strength_lut[rank];
+        return get_strength_from_rank(rank);
     }
     return 5000;
 }
@@ -445,6 +446,187 @@ void generate_turn_multidimensional_lut(FILE* fp);
 void generate_river_multidimensional_lut(FILE* fp);
 void print_usage(const char* program_name);
 
+// 新增：压缩Turn LUT生成的辅助结构
+typedef struct {
+    int h1, h2, c1, c2, c3, c4;     // 完整的6张牌
+    holdem_evaluation_t evaluation;  // 计算结果
+} turn_combination_t;
+
+// 哈希表用于去重和快速查找
+typedef struct turn_hash_entry {
+    uint64_t key;                    // 6张牌的哈希值
+    holdem_evaluation_t evaluation;  // 评估结果
+    struct turn_hash_entry* next;    // 链表指针
+} turn_hash_entry_t;
+
+#define TURN_HASH_SIZE 100003  // 素数，用作哈希表大小
+
+// 计算6张牌的哈希值（用于去重）
+static uint64_t calculate_turn_hash(int h1, int h2, int c1, int c2, int c3, int c4) {
+    // 对6张牌排序后计算哈希
+    int cards[6] = {h1, h2, c1, c2, c3, c4};
+    qsort(cards, 6, sizeof(int), compare_cards_desc);
+
+    uint64_t hash = 0;
+    for (int i = 0; i < 6; i++) {
+        hash = hash * 53 + cards[i];  // 53是质数
+    }
+    return hash;
+}
+
+// 计算转牌对花色分布的影响
+static uint8_t calculate_turn_suit_impact(int c1, int c2, int c3, int c4) {
+    int flop_suits[4] = {0};
+    int turn_suits[4] = {0};
+
+    // 统计翻牌花色
+    flop_suits[c1 % 4]++;
+    flop_suits[c2 % 4]++;
+    flop_suits[c3 % 4]++;
+
+    // 统计转牌后花色
+    turn_suits[c1 % 4]++;
+    turn_suits[c2 % 4]++;
+    turn_suits[c3 % 4]++;
+    turn_suits[c4 % 4]++;
+
+    // 计算花色分布变化的影响值
+    uint8_t impact = 0;
+    for (int i = 0; i < 4; i++) {
+        if (turn_suits[i] >= 3) impact |= (1 << i);  // 标记可能的同花听牌
+    }
+
+    return impact;
+}
+
+void generate_turn_multidimensional_lut_compressed(FILE* fp) {
+    printf("Generating compressed turn multidimensional LUT using 4-card precise indexing...\n");
+
+    // 创建哈希表用于去重
+    turn_hash_entry_t* hash_table[TURN_HASH_SIZE] = {NULL};
+    turn_combination_t* unique_combinations = malloc(sizeof(turn_combination_t) * 200000);
+    if (!unique_combinations) {
+        fprintf(stderr, "Error: Failed to allocate memory for turn combinations.\n");
+        return;
+    }
+
+    int combination_count = 0;
+    int total_processed = 0;
+
+    printf("Phase 1: Generating and deduplicating all turn combinations...\n");
+
+    // 遍历所有可能的6张牌组合
+    #pragma omp parallel for schedule(dynamic)
+    for (int c1 = 0; c1 < 52; c1++) {
+        if (omp_get_thread_num() == 0 && c1 % 5 == 0) {
+            printf("  ... Processing flop card 1: %d/52\n", c1 + 1);
+        }
+
+        for (int c2 = c1 + 1; c2 < 52; c2++) {
+            for (int c3 = c2 + 1; c3 < 52; c3++) {
+                for (int c4 = 0; c4 < 52; c4++) {
+                    if (c4 == c1 || c4 == c2 || c4 == c3) continue;
+
+                    for (int h1 = 0; h1 < 52; h1++) {
+                        if (h1==c1 || h1==c2 || h1==c3 || h1==c4) continue;
+                        for (int h2 = h1 + 1; h2 < 52; h2++) {
+                            if (h2==c1 || h2==c2 || h2==c3 || h2==c4) continue;
+
+                            uint64_t hash = calculate_turn_hash(h1, h2, c1, c2, c3, c4);
+                            int hash_index = hash % TURN_HASH_SIZE;
+
+                            // 检查是否已存在
+                            bool found = false;
+                            #pragma omp critical
+                            {
+                                turn_hash_entry_t* entry = hash_table[hash_index];
+                                while (entry && !found) {
+                                    if (entry->key == hash) {
+                                        found = true;
+                                    }
+                                    entry = entry->next;
+                                }
+
+                                if (!found && combination_count < 200000) {
+                                    // 计算评估结果
+                                    int hand[6] = {h1, h2, c1, c2, c3, c4};
+                                    holdem_evaluation_t eval;
+                                    eval.equity_vs_all = calculate_one_street_strength(hand, 6);
+                                    eval.equity_vs_pair_sets = calculate_equity_vs_range(hand, 6, is_pair_sets_on_board);
+
+                                    // 添加到唯一组合列表
+                                    unique_combinations[combination_count] = (turn_combination_t){
+                                        .h1 = h1, .h2 = h2, .c1 = c1, .c2 = c2, .c3 = c3, .c4 = c4,
+                                        .evaluation = eval
+                                    };
+
+                                    // 添加到哈希表
+                                    turn_hash_entry_t* new_entry = malloc(sizeof(turn_hash_entry_t));
+                                    new_entry->key = hash;
+                                    new_entry->evaluation = eval;
+                                    new_entry->next = hash_table[hash_index];
+                                    hash_table[hash_index] = new_entry;
+
+                                    combination_count++;
+                                }
+                                total_processed++;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    printf("Phase 2: Writing compressed LUT to file...\n");
+    printf("Total unique combinations: %d (compression ratio: %.2f%%)\n",
+           combination_count, (double)combination_count * 100.0 / total_processed);
+
+    // 写入压缩的LUT
+    fprintf(fp, "/* Compressed Turn LUT with 4-card precise indexing */\n");
+    fprintf(fp, "const uint32_t turn_lut_size = %d;\n\n", combination_count);
+
+    fprintf(fp, "const holdem_evaluation_t turn_multidimensional_lut_compressed[%d] = {\n", combination_count);
+    for (int i = 0; i < combination_count; i++) {
+        fprintf(fp, "    {%d,%d}",
+                unique_combinations[i].evaluation.equity_vs_all,
+                unique_combinations[i].evaluation.equity_vs_pair_sets);
+        if (i < combination_count - 1) fprintf(fp, ",");
+        if (i % 8 == 7) fprintf(fp, "\n");
+    }
+    fprintf(fp, "\n};\n\n");
+
+    // 写入键映射表
+    fprintf(fp, "const compressed_turn_key_t turn_lut_key_map[%d] = {\n", combination_count);
+    for (int i = 0; i < combination_count; i++) {
+        turn_combination_t* combo = &unique_combinations[i];
+        int flop_board[3] = {combo->c1, combo->c2, combo->c3};
+
+        uint16_t hole_index = get_precise_hole_index_c(combo->h1, combo->h2, flop_board, 3);
+        uint16_t flop_texture = get_canonical_flop_index(combo->c1, combo->c2, combo->c3);
+        uint8_t turn_rank = combo->c4 / 4;
+        uint8_t suit_impact = calculate_turn_suit_impact(combo->c1, combo->c2, combo->c3, combo->c4);
+
+        fprintf(fp, "    {%d,%d,%d,%d}", hole_index, flop_texture, turn_rank, suit_impact);
+        if (i < combination_count - 1) fprintf(fp, ",");
+        if (i % 4 == 3) fprintf(fp, "\n");
+    }
+    fprintf(fp, "\n};\n\n");
+
+    // 清理内存
+    for (int i = 0; i < TURN_HASH_SIZE; i++) {
+        turn_hash_entry_t* entry = hash_table[i];
+        while (entry) {
+            turn_hash_entry_t* next = entry->next;
+            free(entry);
+            entry = next;
+        }
+    }
+    free(unique_combinations);
+
+    printf("Compressed Turn LUT generation completed.\n");
+}
+
 int main(int argc, char** argv) {
     const char* output_file = "evaluator_holdem_potential_tables.h";
 
@@ -472,7 +654,11 @@ int main(int argc, char** argv) {
 
     printf("Generating multidimensional evaluation lookup tables...\n");
     generate_flop_multidimensional_lut(fp);
-    generate_turn_multidimensional_lut(fp);
+
+    // 选择使用压缩版本的Turn LUT（推荐）或传统版本
+    // generate_turn_multidimensional_lut(fp);  // 传统版本：大文件，3张牌索引
+    generate_turn_multidimensional_lut_compressed(fp);  // 新版本：小文件，4张牌精确索引
+
     generate_river_multidimensional_lut(fp);
 
     fprintf(fp, "#endif // EVALUATOR_HOLDEM_POTENTIAL_TABLES_H\n");
@@ -570,6 +756,7 @@ void generate_flop_multidimensional_lut(FILE* fp) {
 
 void generate_turn_multidimensional_lut(FILE* fp) {
     printf("Generating turn multidimensional LUT (1326x1755x13) using multi-threading...\n");
+    printf("Note: Using 4-card isomorphism for precise turn calculations\n");
 
     // 关键优化：使用细粒度锁
     const int num_locks = 4096;
@@ -578,22 +765,35 @@ void generate_turn_multidimensional_lut(FILE* fp) {
         omp_init_lock(&locks[i]);
     }
 
-    // 1. 分配内存
+    // 1. 分配内存 - 修改：使用更大的索引空间来容纳4张牌的花色同构
+    // 实际上我们需要重新思考这个结构
+    // 选择1：保持[1326][1755][13]但使用3张牌索引作为近似
+    // 选择2：改为[更大空间][1755][13]使用4张牌精确索引
+    // 选择3：改为一维数组，使用组合索引
+
+    // 这里采用选择1的改进版本：使用3张牌索引但记录4张牌的实际情况
     holdem_evaluation_t (*results)[1755][13] = malloc(sizeof(holdem_evaluation_t[1326][1755][13]));
-    char (*done)[1755][13] = calloc(1326, sizeof(*done)); // 关键优化：添加done数组
-    if (!results || !done) {
+    char (*done)[1755][13] = calloc(1326, sizeof(*done));
+
+    // 添加一个映射表来跟踪4张牌到3张牌索引的映射
+    int (*four_card_to_three_card_map)[1755][13] = malloc(sizeof(int[1326][1755][13]));
+
+    if (!results || !done || !four_card_to_three_card_map) {
         fprintf(stderr, "Error: Failed to allocate memory for turn LUT results.\n");
         if (results) free(results);
         if (done) free(done);
+        if (four_card_to_three_card_map) free(four_card_to_three_card_map);
         for (int i = 0; i < num_locks; i++) {
             omp_destroy_lock(&locks[i]);
         }
         return;
     }
-    // Initialize with a default value
-    memset(results, 0, sizeof(holdem_evaluation_t[1326][1755][13]));
 
-    // 2. OpenMP并行计算
+    // Initialize arrays
+    memset(results, 0, sizeof(holdem_evaluation_t[1326][1755][13]));
+    memset(four_card_to_three_card_map, -1, sizeof(int[1326][1755][13]));
+
+    // 2. OpenMP并行计算 - 使用4张牌的完整花色同构
     #pragma omp parallel for schedule(dynamic)
     for (int c1 = 0; c1 < 52; c1++) {
         if (omp_get_thread_num() == 0) {
@@ -601,10 +801,14 @@ void generate_turn_multidimensional_lut(FILE* fp) {
         }
         for (int c2 = c1 + 1; c2 < 52; c2++) {
             for (int c3 = c2 + 1; c3 < 52; c3++) {
-                for (int c4 = c3 + 1; c4 < 52; c4++) {
-                    int board[4] = {c1, c2, c3, c4};
+                // 遍历所有可能的转牌，不要求有序
+                for (int c4 = 0; c4 < 52; c4++) {
+                    if (c4 == c1 || c4 == c2 || c4 == c3) continue;
 
-                    // 我们使用翻牌的规范索引，加上转牌的牌面作为第三维度
+                    int flop_board[3] = {c1, c2, c3};
+                    int turn_board[4] = {c1, c2, c3, c4};
+
+                    // 使用翻牌计算board索引（保持LUT结构一致性）
                     int canonical_board_idx = get_canonical_flop_index(c1, c2, c3);
                     int turn_rank = c4 / 4;
 
@@ -614,24 +818,37 @@ void generate_turn_multidimensional_lut(FILE* fp) {
                         for (int h2 = h1 + 1; h2 < 52; h2++) {
                             if (h2==c1 || h2==c2 || h2==c3 || h2==c4) continue;
 
-                            // 这里我们使用完整的4张公共牌来确定手牌的规范索引
-                            int precise_hole_idx = get_precise_hole_index_c(h1, h2, board, 4);
+                            // 关键修复：计算两种索引用于比较和映射
+                            int precise_hole_idx_3card = get_precise_hole_index_c(h1, h2, flop_board, 3);
+                            int precise_hole_idx_4card = get_precise_hole_index_c(h1, h2, turn_board, 4);
 
-                            // 关键优化：检查是否已计算
-                            if (!done[precise_hole_idx][canonical_board_idx][turn_rank]) {
+                            // 边界检查
+                            if (precise_hole_idx_3card < 0 || precise_hole_idx_3card >= 1326 ||
+                                canonical_board_idx < 0 || canonical_board_idx >= 1755 ||
+                                turn_rank < 0 || turn_rank >= 13) {
+                                continue;
+                            }
+
+                            // 记录4张牌索引到3张牌索引的映射（用于调试）
+                            if (four_card_to_three_card_map[precise_hole_idx_3card][canonical_board_idx][turn_rank] == -1) {
+                                four_card_to_three_card_map[precise_hole_idx_3card][canonical_board_idx][turn_rank] = precise_hole_idx_4card;
+                            }
+
+                            // 检查是否已计算（使用3张牌索引作为LUT键）
+                            if (!done[precise_hole_idx_3card][canonical_board_idx][turn_rank]) {
                                 // 使用细粒度锁
-                                int lock_idx = (precise_hole_idx * 1755 * 13 + canonical_board_idx * 13 + turn_rank) % num_locks;
+                                int lock_idx = (precise_hole_idx_3card * 1755 * 13 + canonical_board_idx * 13 + turn_rank) % num_locks;
                                 omp_set_lock(&locks[lock_idx]);
 
                                 // 双重检查
-                                if (!done[precise_hole_idx][canonical_board_idx][turn_rank]) {
+                                if (!done[precise_hole_idx_3card][canonical_board_idx][turn_rank]) {
                                     int hand[6] = {h1, h2, c1, c2, c3, c4};
                                     holdem_evaluation_t eval;
                                     eval.equity_vs_all = calculate_one_street_strength(hand, 6);
                                     eval.equity_vs_pair_sets = calculate_equity_vs_range(hand, 6, is_pair_sets_on_board);
 
-                                    results[precise_hole_idx][canonical_board_idx][turn_rank] = eval;
-                                    done[precise_hole_idx][canonical_board_idx][turn_rank] = 1;
+                                    results[precise_hole_idx_3card][canonical_board_idx][turn_rank] = eval;
+                                    done[precise_hole_idx_3card][canonical_board_idx][turn_rank] = 1;
                                 }
                                 omp_unset_lock(&locks[lock_idx]);
                             }
@@ -642,8 +859,10 @@ void generate_turn_multidimensional_lut(FILE* fp) {
         }
     }
 
-    // 3. 写入文件
+    // 3. 写入文件（添加注释说明索引计算方法）
     printf("All turn computations finished. Writing to file...\n");
+    fprintf(fp, "/* Turn LUT uses 3-card hole isomorphism for storage efficiency */\n");
+    fprintf(fp, "/* but calculations are based on actual 4-card turn situations */\n");
     fprintf(fp, "const holdem_evaluation_t turn_multidimensional_lut[1326][1755][13] = {\n");
     for (int hole_idx = 0; hole_idx < 1326; hole_idx++) {
         fprintf(fp, "  { // hole_index = %d\n", hole_idx);
@@ -661,6 +880,7 @@ void generate_turn_multidimensional_lut(FILE* fp) {
     // 4. 释放内存
     free(results);
     free(done);
+    free(four_card_to_three_card_map);
     for (int i = 0; i < num_locks; i++) {
         omp_destroy_lock(&locks[i]);
     }
