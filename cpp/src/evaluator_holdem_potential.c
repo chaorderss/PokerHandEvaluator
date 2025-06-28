@@ -24,12 +24,31 @@
 #include "../include/phevaluator/phevaluator.h"
 #include "evaluator_holdem_potential_tables.h"  // Include generated lookup tables
 #include "../../../hand-isomorphism/src/hand_index.h" // Import the hand isomorphism library
+#include "../include/clustering_bridge.h" // Import clustering functionality
 
 #ifndef ISOMORPHIC_LUTS_DEFINED
 // Provide dummy definitions for LUTs to allow the generator to compile before tables exist.
 const holdem_evaluation_t flop_multidimensional_lut[1] = {0};
 const holdem_evaluation_t turn_multidimensional_lut[1] = {0};
 const int river_multidimensional_lut[7462] = {0};
+
+// Dummy definitions for clustered LUTs
+const holdem_evaluation_t flop_clustered_lut[1] = {0};
+const holdem_evaluation_t turn_clustered_lut[1] = {0};
+const size_t flop_hand_to_cluster_map[1] = {0};
+const size_t turn_hand_to_cluster_map[1] = {0};
+#ifndef FLOP_CLUSTER_COUNT
+#define FLOP_CLUSTER_COUNT 1
+#endif
+#ifndef TURN_CLUSTER_COUNT
+#define TURN_CLUSTER_COUNT 1
+#endif
+#ifndef FLOP_HAND_COUNT
+#define FLOP_HAND_COUNT 1
+#endif
+#ifndef TURN_HAND_COUNT
+#define TURN_HAND_COUNT 1
+#endif
 #endif
 
 // Helper functions for debugging
@@ -425,6 +444,52 @@ static int board_to_texture_index(int* board, int board_count) {
 }
 
 /**
+ * @brief Helper function to use clustered LUTs if available
+ */
+static holdem_evaluation_t evaluate_holdem_clustered(int* cards, int card_count) {
+    holdem_evaluation_t result = {0, 0};
+
+    if (card_count == 5) {
+        // Flop: Use clustered LUT if available
+        if (flop_indexer_initialized && FLOP_CLUSTER_COUNT > 1) {
+            uint8_t cards_u8[5];
+            for (int i = 0; i < 5; i++) {
+                cards_u8[i] = (uint8_t)cards[i];
+            }
+            hand_index_t hand_index = hand_index_last(&flop_indexer, cards_u8);
+            if (hand_index < FLOP_HAND_COUNT) {
+                size_t cluster_id = flop_hand_to_cluster_map[hand_index];
+                if (cluster_id < FLOP_CLUSTER_COUNT) {
+                    result = flop_clustered_lut[cluster_id];
+                    return result;
+                }
+            }
+        }
+    } else if (card_count == 6) {
+        // Turn: Use clustered LUT if available
+        if (turn_indexer_initialized && TURN_CLUSTER_COUNT > 1) {
+            uint8_t cards_u8[6];
+            for (int i = 0; i < 6; i++) {
+                cards_u8[i] = (uint8_t)cards[i];
+            }
+            hand_index_t hand_index = hand_index_last(&turn_indexer, cards_u8);
+            if (hand_index < TURN_HAND_COUNT) {
+                size_t cluster_id = turn_hand_to_cluster_map[hand_index];
+                if (cluster_id < TURN_CLUSTER_COUNT) {
+                    result = turn_clustered_lut[cluster_id];
+                    return result;
+                }
+            }
+        }
+    }
+
+    // Fallback to default evaluation
+    result.equity_vs_all = 5000;
+    result.equity_vs_pair_sets = 2500;
+    return result;
+}
+
+/**
  * @brief Main multi-dimensional evaluation function using lookup tables
  */
 holdem_evaluation_t evaluate_holdem_multidimensional(int* cards, int card_count)
@@ -435,40 +500,39 @@ holdem_evaluation_t evaluate_holdem_multidimensional(int* cards, int card_count)
         // Preflop: We don't have a LUT for preflop, return a neutral value.
         result.equity_vs_all = 5000;
         result.equity_vs_pair_sets = 5000;
-    } else if (card_count == 5) {
-        // Flop: Use the new isomorphic LUT
-        if (flop_indexer_initialized) {
-            uint8_t cards_u8[5];
-            for (int i = 0; i < 5; i++) {
-                cards_u8[i] = (uint8_t)cards[i];
-            }
-            hand_index_t index = hand_index_last(&flop_indexer, cards_u8);
-            result = flop_multidimensional_lut[index];
-        } else {
-            // Fallback if indexer failed to initialize
-            result = evaluate_holdem_multidimensional_nolut(cards, 5);
-        }
-    } else if (card_count == 6) {
-        // Turn: Use the new isomorphic LUT
-        if (turn_indexer_initialized) {
-            uint8_t cards_u8[6];
-            // The hand_indexer expects hole cards, then flop, then turn.
-            // The input `cards` array is already in this order.
-            for (int i=0; i<6; i++) {
-                cards_u8[i] = (uint8_t)cards[i];
-            }
-            hand_index_t index = hand_index_last(&turn_indexer, cards_u8);
+    } else if (card_count == 5 || card_count == 6) {
+        // Try clustered LUT first (if available)
+        result = evaluate_holdem_clustered(cards, card_count);
 
-            // The size of the LUT is known at compile time via the generated header.
-            // We can get it from the indexer too for a runtime check, but it's not strictly necessary.
-            // hand_index_t lut_size = hand_indexer_size(&turn_indexer, 2);
-            // if (index < lut_size) {
-            result = turn_multidimensional_lut[index];
-            // }
-
-        } else {
-            // Fallback if indexer failed to initialize
-            result = evaluate_holdem_multidimensional_nolut(cards, 6);
+        // If clustered LUT didn't work, try full isomorphic LUT
+        if (result.equity_vs_all == 0 && result.equity_vs_pair_sets == 0) {
+            if (card_count == 5) {
+                // Flop: Use the new isomorphic LUT
+                if (flop_indexer_initialized) {
+                    uint8_t cards_u8[5];
+                    for (int i = 0; i < 5; i++) {
+                        cards_u8[i] = (uint8_t)cards[i];
+                    }
+                    hand_index_t index = hand_index_last(&flop_indexer, cards_u8);
+                    result = flop_multidimensional_lut[index];
+                } else {
+                    // Fallback if indexer failed to initialize
+                    result = evaluate_holdem_multidimensional_nolut(cards, 5);
+                }
+            } else { // card_count == 6
+                // Turn: Use the new isomorphic LUT
+                if (turn_indexer_initialized) {
+                    uint8_t cards_u8[6];
+                    for (int i=0; i<6; i++) {
+                        cards_u8[i] = (uint8_t)cards[i];
+                    }
+                    hand_index_t index = hand_index_last(&turn_indexer, cards_u8);
+                    result = turn_multidimensional_lut[index];
+                } else {
+                    // Fallback if indexer failed to initialize
+                    result = evaluate_holdem_multidimensional_nolut(cards, 6);
+                }
+            }
         }
     } else if (card_count == 7) {
         // River: Use direct rank mapping (this part remains the same)

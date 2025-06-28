@@ -4,8 +4,8 @@ project(PokerHandEvaluator VERSION 0.6.0)
 
 set(CMAKE_BUILD_TYPE  "Release")
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
-# Use C++ 11 Standard to compile
-set(CMAKE_CXX_STANDARD 11)
+# Use C++ 17 Standard to compile (required for poker-hand-clustering)
+set(CMAKE_CXX_STANDARD 17)
 
 set(CMAKE_C_STANDARD 99)
 
@@ -21,8 +21,45 @@ option(BUILD_EXAMPLES "Build examples ON/OFF" OFF)
 # ==============================================================================
 # == Lookup Table Generator for Hold'em Potential
 # ==============================================================================
+# First build poker-hand-clustering objects
+file(GLOB CLUSTERING_SOURCES
+  "${CMAKE_CURRENT_SOURCE_DIR}/../poker-hand-clustering/src/*.cc"
+  "${CMAKE_CURRENT_SOURCE_DIR}/../poker-hand-clustering/dependencies/hand-isomorphism/src/*.c"
+)
+
+# Debug: Print found sources
+message(STATUS "Clustering sources found: ${CLUSTERING_SOURCES}")
+
+if(CLUSTERING_SOURCES)
+    # Separate C and C++ sources
+    set(C_SOURCES "")
+    set(CXX_SOURCES "")
+    foreach(SOURCE ${CLUSTERING_SOURCES})
+        if(SOURCE MATCHES "\\.c$")
+            list(APPEND C_SOURCES ${SOURCE})
+        elseif(SOURCE MATCHES "\\.cc$")
+            list(APPEND CXX_SOURCES ${SOURCE})
+        endif()
+    endforeach()
+
+    add_library(poker_clustering STATIC ${CLUSTERING_SOURCES})
+    target_include_directories(poker_clustering PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR}/../poker-hand-clustering/src
+      ${CMAKE_CURRENT_SOURCE_DIR}/../poker-hand-clustering/dependencies/hand-isomorphism/src
+    )
+
+    # Set C++ standard for C++ files only
+    set_target_properties(poker_clustering PROPERTIES CXX_STANDARD 17)
+    target_compile_options(poker_clustering PRIVATE -O3 -fPIC)
+    set(CLUSTERING_AVAILABLE TRUE)
+else()
+    message(WARNING "No clustering sources found, building without clustering support")
+    set(CLUSTERING_AVAILABLE FALSE)
+endif()
+
 add_executable(generate_potential_tables
   src/generate_potential_tables.c
+  src/clustering_bridge.cpp
   src/evaluator5.c
   src/evaluator6.c
   src/evaluator7.c
@@ -36,7 +73,12 @@ add_executable(generate_potential_tables
   src/hash.c
   src/7462.c
 )
-target_link_libraries(generate_potential_tables PRIVATE -lm handisomorphism)
+if(CLUSTERING_AVAILABLE)
+    target_link_libraries(generate_potential_tables PRIVATE handisomorphism poker_clustering -lm)
+    target_compile_definitions(generate_potential_tables PRIVATE CLUSTERING_AVAILABLE)
+else()
+    target_link_libraries(generate_potential_tables PRIVATE handisomorphism -lm)
+endif()
 target_compile_options(generate_potential_tables PRIVATE -fopenmp)
 
 # Remove phev-core dependency - not needed for standalone generator

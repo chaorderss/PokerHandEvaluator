@@ -15,6 +15,7 @@
 #include "../include/phevaluator/phevaluator.h"
 #include "../include/phevaluator/evaluator_holdem_potential.h"
 #include "../../../hand-isomorphism/src/hand_index.h" // Import the hand isomorphism library
+#include "../include/clustering_bridge.h" // Import clustering functionality
 
 // PHEvaluator functions
 extern int evaluate_5cards(int a, int b, int c, int d, int e);
@@ -348,6 +349,8 @@ static void generate_board_from_texture(int texture_index, int* board, int* used
 void generate_flop_multidimensional_lut(FILE* fp);
 void generate_turn_multidimensional_lut(FILE* fp);
 void generate_river_multidimensional_lut(FILE* fp);
+void generate_flop_clustered_lut(FILE* fp, size_t target_clusters);
+void generate_turn_clustered_lut(FILE* fp, size_t target_clusters);
 void print_usage(const char* program_name);
 
 // --- START: New Isomorphic Flop LUT Generation ---
@@ -473,6 +476,9 @@ void generate_turn_multidimensional_lut_isomorphic(FILE* fp) {
 
 int main(int argc, char** argv) {
     const char* output_file = "evaluator_holdem_potential_tables.h";
+    bool use_clustering = false;
+    size_t flop_clusters = 1000;
+    size_t turn_clusters = 5000;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
@@ -481,6 +487,14 @@ int main(int argc, char** argv) {
         } else if (strcmp(argv[i], "-o") == 0 || strcmp(argv[i], "--output") == 0) {
             if (i + 1 < argc) output_file = argv[++i];
             else { fprintf(stderr, "Error: --output requires a filename\n"); return 1; }
+        } else if (strcmp(argv[i], "--clustered") == 0) {
+            use_clustering = true;
+        } else if (strcmp(argv[i], "--flop-clusters") == 0) {
+            if (i + 1 < argc) flop_clusters = atoi(argv[++i]);
+            else { fprintf(stderr, "Error: --flop-clusters requires a number\n"); return 1; }
+        } else if (strcmp(argv[i], "--turn-clusters") == 0) {
+            if (i + 1 < argc) turn_clusters = atoi(argv[++i]);
+            else { fprintf(stderr, "Error: --turn-clusters requires a number\n"); return 1; }
         }
     }
 
@@ -497,10 +511,17 @@ int main(int argc, char** argv) {
     fprintf(fp, "#include \"../include/phevaluator/evaluator_holdem_potential.h\"\n\n");
 
     printf("Generating multidimensional evaluation lookup tables...\n");
-    generate_flop_multidimensional_lut_isomorphic(fp);
 
-    // NEW: Generate the isomorphic turn LUT
-    generate_turn_multidimensional_lut_isomorphic(fp);
+    if (use_clustering) {
+        printf("Using clustering approach with %zu flop clusters and %zu turn clusters...\n",
+               flop_clusters, turn_clusters);
+        generate_flop_clustered_lut(fp, flop_clusters);
+        generate_turn_clustered_lut(fp, turn_clusters);
+    } else {
+        printf("Using full isomorphic LUT approach...\n");
+        generate_flop_multidimensional_lut_isomorphic(fp);
+        generate_turn_multidimensional_lut_isomorphic(fp);
+    }
 
     generate_river_multidimensional_lut(fp);
 
@@ -525,8 +546,89 @@ void generate_river_multidimensional_lut(FILE* fp) {
     fprintf(fp, "};\n\n");
 }
 
+void generate_flop_clustered_lut(FILE* fp, size_t target_clusters) {
+    printf("Generating clustered flop LUT with %zu clusters...\n", target_clusters);
+
+    clustering_result_t* clustering = generate_flop_clustering(target_clusters);
+    if (!clustering) {
+        fprintf(stderr, "Error: Failed to generate flop clustering\n");
+        return;
+    }
+
+    fprintf(fp, "\n/* Clustered Flop LUT (%zu clusters, %zu hand mappings) */\n",
+            clustering->size, clustering->map_size);
+
+    // Write cluster data
+    fprintf(fp, "const holdem_evaluation_t flop_clustered_lut[%zu] = {\n", clustering->size);
+    for (size_t i = 0; i < clustering->size; i++) {
+        clustered_evaluation_t* cluster = &clustering->data[i];
+        fprintf(fp, "    {%d,%d}", cluster->equity_vs_all, cluster->equity_vs_pair_sets);
+        if (i < clustering->size - 1) fprintf(fp, ",");
+        if (i % 8 == 7) fprintf(fp, "\n");
+    }
+    fprintf(fp, "\n};\n\n");
+
+    // Write hand-to-cluster mapping
+    fprintf(fp, "const size_t flop_hand_to_cluster_map[%zu] = {\n", clustering->map_size);
+    for (size_t i = 0; i < clustering->map_size; i++) {
+        fprintf(fp, "%zu", clustering->hand_to_cluster_map[i]);
+        if (i < clustering->map_size - 1) fprintf(fp, ",");
+        if (i % 16 == 15) fprintf(fp, "\n");
+    }
+    fprintf(fp, "\n};\n\n");
+
+    // Write convenience macros
+    fprintf(fp, "#define FLOP_CLUSTER_COUNT %zu\n", clustering->size);
+    fprintf(fp, "#define FLOP_HAND_COUNT %zu\n\n", clustering->map_size);
+
+    free_clustering_result(clustering);
+    printf("Clustered flop LUT generation completed.\n");
+}
+
+void generate_turn_clustered_lut(FILE* fp, size_t target_clusters) {
+    printf("Generating clustered turn LUT with %zu clusters...\n", target_clusters);
+
+    clustering_result_t* clustering = generate_turn_clustering(target_clusters);
+    if (!clustering) {
+        fprintf(stderr, "Error: Failed to generate turn clustering\n");
+        return;
+    }
+
+    fprintf(fp, "\n/* Clustered Turn LUT (%zu clusters, %zu hand mappings) */\n",
+            clustering->size, clustering->map_size);
+
+    // Write cluster data
+    fprintf(fp, "const holdem_evaluation_t turn_clustered_lut[%zu] = {\n", clustering->size);
+    for (size_t i = 0; i < clustering->size; i++) {
+        clustered_evaluation_t* cluster = &clustering->data[i];
+        fprintf(fp, "    {%d,%d}", cluster->equity_vs_all, cluster->equity_vs_pair_sets);
+        if (i < clustering->size - 1) fprintf(fp, ",");
+        if (i % 8 == 7) fprintf(fp, "\n");
+    }
+    fprintf(fp, "\n};\n\n");
+
+    // Write hand-to-cluster mapping
+    fprintf(fp, "const size_t turn_hand_to_cluster_map[%zu] = {\n", clustering->map_size);
+    for (size_t i = 0; i < clustering->map_size; i++) {
+        fprintf(fp, "%zu", clustering->hand_to_cluster_map[i]);
+        if (i < clustering->map_size - 1) fprintf(fp, ",");
+        if (i % 16 == 15) fprintf(fp, "\n");
+    }
+    fprintf(fp, "\n};\n\n");
+
+    // Write convenience macros
+    fprintf(fp, "#define TURN_CLUSTER_COUNT %zu\n", clustering->size);
+    fprintf(fp, "#define TURN_HAND_COUNT %zu\n\n", clustering->map_size);
+
+    free_clustering_result(clustering);
+    printf("Clustered turn LUT generation completed.\n");
+}
+
 void print_usage(const char* program_name) {
     printf("Usage: %s [OPTIONS]\n", program_name);
     printf("  -h, --help                Show this help message\n");
     printf("  -o, --output FILE         Output file (default: evaluator_holdem_potential_tables.h)\n");
+    printf("  --clustered               Use clustering to reduce LUT size\n");
+    printf("  --flop-clusters N         Number of flop clusters (default: 1000)\n");
+    printf("  --turn-clusters N         Number of turn clusters (default: 5000)\n");
 }
