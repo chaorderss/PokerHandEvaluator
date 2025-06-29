@@ -25,3 +25,10 @@ src/tables_plo5.c
 # This file has been compressed to src/tables_plo6.tar.gz
 # We only track src/tables_plo6.tar.gz in git
 src/tables_plo6.c
+src/evaluator_holdem_potential_tables_original.h
+src/evaluator_holdem_potential_tables_compressed.h
+src/evaluator_holdem_potential_tables_bitpacked.h
+src/evaluator_holdem_potential_tables.h
+include/phevaluator/evaluator_holdem_potential_tables.h
+include/phevaluator/evaluator_holdem_potential_tables_compressed.h
+include/phevaluator/evaluator_holdem_potential_tables_bitpacked.h

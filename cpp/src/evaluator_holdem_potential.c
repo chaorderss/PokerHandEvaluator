@@ -22,8 +22,24 @@
 #include "../include/phevaluator/strength_lut.h"
 #include "../include/phevaluator/evaluator_holdem_potential.h"
 #include "../include/phevaluator/phevaluator.h"
-#include "evaluator_holdem_potential_tables.h"  // Include generated lookup tables
 #include "../../../hand-isomorphism/src/hand_index.h" // Import the hand isomorphism library
+
+// 条件包含查找表文件
+#ifdef BIT_PACKED_LUTS
+    #include "../include/phevaluator/evaluator_holdem_potential_tables_bitpacked.h"
+    #define BITPACKED_TABLES_AVAILABLE
+#else
+    // 如果没有位压缩，尝试包含常规压缩表
+    #if __has_include("../include/phevaluator/evaluator_holdem_potential_tables_compressed.h")
+        #include "../include/phevaluator/evaluator_holdem_potential_tables_compressed.h"
+        #define COMPRESSED_TABLES_AVAILABLE
+    #elif __has_include("../include/phevaluator/evaluator_holdem_potential_tables.h")
+        #include "../include/phevaluator/evaluator_holdem_potential_tables.h"
+        #define ORIGINAL_TABLES_AVAILABLE
+    #else
+        #error "No holdem potential tables found!"
+    #endif
+#endif
 
 #ifndef ISOMORPHIC_LUTS_DEFINED
 // Provide dummy definitions for LUTs to allow the generator to compile before tables exist.
@@ -444,7 +460,16 @@ holdem_evaluation_t evaluate_holdem_multidimensional(int* cards, int card_count)
             }
             hand_index_t index = hand_index_last(&flop_indexer, cards_u8);
             uint32_t mapping_index = flop_mapping[index];
+
+            #ifdef BITPACKED_TABLES_AVAILABLE
+            // Use bit-packed lookup table
+            uint32_t packed_value = flop_unique_evaluations_packed[mapping_index];
+            result.equity_vs_all = UNPACK_EQUITY_VS_ALL(packed_value);
+            result.equity_vs_pair_sets = UNPACK_EQUITY_VS_PAIR_SETS(packed_value);
+            #else
+            // Use regular lookup table
             result = flop_unique_evaluations[mapping_index];
+            #endif
         } else {
             // Fallback if indexer failed to initialize
             result = evaluate_holdem_multidimensional_nolut(cards, 5);
@@ -460,7 +485,16 @@ holdem_evaluation_t evaluate_holdem_multidimensional(int* cards, int card_count)
             }
             hand_index_t index = hand_index_last(&turn_indexer, cards_u8);
             uint32_t mapping_index = turn_mapping[index];
+
+            #ifdef BITPACKED_TABLES_AVAILABLE
+            // Use bit-packed lookup table
+            uint32_t packed_value = turn_unique_evaluations_packed[mapping_index];
+            result.equity_vs_all = UNPACK_EQUITY_VS_ALL(packed_value);
+            result.equity_vs_pair_sets = UNPACK_EQUITY_VS_PAIR_SETS(packed_value);
+            #else
+            // Use regular lookup table
             result = turn_unique_evaluations[mapping_index];
+            #endif
 
         } else {
             // Fallback if indexer failed to initialize
@@ -714,3 +748,4 @@ static int calculate_equity_vs_range(int* my_cards, int card_count, bool (*is_in
     free(opponent_hands);
     return final_equity;
 }
+

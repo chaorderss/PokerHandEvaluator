@@ -167,6 +167,8 @@ int get_precise_turn_index(int h1, int h2, int c1, int c2, int c3, int c4);
 // Turn LUT查询函数
 holdem_evaluation_t lookup_turn_multidimensional(int h1, int h2, int c1, int c2, int c3, int c4);
 
+
+
 #ifdef __cplusplus
 }
 #endif
