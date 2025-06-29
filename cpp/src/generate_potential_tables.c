@@ -393,18 +393,95 @@ void generate_flop_multidimensional_lut_isomorphic(FILE* fp) {
         flop_lut[i] = eval;
     }
 
-    printf("All flop evaluations calculated. Writing LUT to file...\n");
-    fprintf(fp, "\n/* Isomorphic Flop LUT (%" PRIhand_index " entries) */\n", lut_size);
-    fprintf(fp, "const holdem_evaluation_t flop_multidimensional_lut[%" PRIhand_index "] = {\n", lut_size);
+    printf("All flop evaluations calculated. Compressing LUT...\n");
+
+    // --- Compression Step ---
+    uint32_t* flop_mapping = malloc(lut_size * sizeof(uint32_t));
+    holdem_evaluation_t* unique_evals = malloc(lut_size * sizeof(holdem_evaluation_t)); // Over-allocate
+    uint32_t unique_count = 0;
+
+    // A simple hash table to find unique evaluations quickly
+    #define HASH_SIZE_FLOP 4194304 // 2^22
+    typedef struct Node {
+        uint32_t eval_idx;
+        struct Node* next;
+    } Node;
+    Node** hash_table = calloc(HASH_SIZE_FLOP, sizeof(Node*));
 
     for (hand_index_t i = 0; i < lut_size; i++) {
-        fprintf(fp, "    {%d,%d}", flop_lut[i].equity_vs_all, flop_lut[i].equity_vs_pair_sets);
-        if (i < lut_size - 1) fprintf(fp, ",");
-        if (i % 8 == 7) fprintf(fp, "\n");
+        holdem_evaluation_t current_eval = flop_lut[i];
+        uint32_t hash = (current_eval.equity_vs_all * 31 + current_eval.equity_vs_pair_sets) % HASH_SIZE_FLOP;
+
+        bool found = false;
+        Node* current_node = hash_table[hash];
+        while (current_node) {
+            uint32_t eval_idx = current_node->eval_idx;
+            if (unique_evals[eval_idx].equity_vs_all == current_eval.equity_vs_all &&
+                unique_evals[eval_idx].equity_vs_pair_sets == current_eval.equity_vs_pair_sets) {
+                flop_mapping[i] = eval_idx;
+                found = true;
+                break;
+            }
+            current_node = current_node->next;
+        }
+
+        if (!found) {
+            uint32_t new_unique_idx = unique_count++;
+            unique_evals[new_unique_idx] = current_eval;
+            flop_mapping[i] = new_unique_idx;
+
+            Node* new_node = malloc(sizeof(Node));
+            new_node->eval_idx = new_unique_idx;
+            new_node->next = hash_table[hash];
+            hash_table[hash] = new_node;
+        }
+    }
+
+    // Free hash table memory
+    for(int i=0; i < HASH_SIZE_FLOP; ++i) {
+        Node* current_node = hash_table[i];
+        while(current_node) {
+            Node* temp = current_node;
+            current_node = current_node->next;
+            free(temp);
+        }
+    }
+    free(hash_table);
+
+    printf("Flop LUT compression: %" PRIhand_index " total -> %u unique (%.2f%% reduction in entries)\n",
+           lut_size, unique_count, 100.0 * (lut_size - unique_count) / lut_size);
+    printf("Data size reduction: from %.2f MB to %.2f MB (Mapping) + %.2f MB (Unique Evals)\n",
+           (double)(lut_size * sizeof(holdem_evaluation_t)) / (1024*1024),
+           (double)(lut_size * sizeof(uint16_t)) / (1024*1024), // Assuming we can use uint16_t
+           (double)(unique_count * sizeof(holdem_evaluation_t)) / (1024*1024));
+
+    // --- Writing to file ---
+    fprintf(fp, "\n/* Compressed Isomorphic Flop LUT (%" PRIhand_index " total, %u unique) */\n", lut_size, unique_count);
+    fprintf(fp, "const holdem_evaluation_t flop_unique_evaluations[%u] = {\n", unique_count);
+    for (uint32_t i = 0; i < unique_count; i++) {
+        fprintf(fp, "    {%u,%u}", unique_evals[i].equity_vs_all, unique_evals[i].equity_vs_pair_sets);
+        if (i < unique_count - 1) fprintf(fp, ",");
+        if ((i + 1) % 8 == 0) fprintf(fp, "\n");
+    }
+    fprintf(fp, "\n};\n\n");
+
+    // Check if we can use uint16_t for mapping
+    bool use_uint16 = (unique_count <= 65535);
+    if (use_uint16) {
+        fprintf(fp, "const uint16_t flop_mapping[%" PRIhand_index "] = {\n", lut_size);
+    } else {
+        fprintf(fp, "const uint32_t flop_mapping[%" PRIhand_index "] = {\n", lut_size);
+    }
+
+    for (hand_index_t i = 0; i < lut_size; i++) {
+        fprintf(fp, "%u,", flop_mapping[i]);
+        if (i < lut_size - 1 && (i + 1) % 20 == 0) fprintf(fp, "\n");
     }
     fprintf(fp, "\n};\n\n");
 
     free(flop_lut);
+    free(unique_evals);
+    free(flop_mapping);
     hand_indexer_free(&flop_indexer);
     printf("Isomorphic Flop LUT generation completed.\n");
 }
@@ -433,7 +510,7 @@ void generate_turn_multidimensional_lut_isomorphic(FILE* fp) {
     printf("Calculating evaluations for all canonical turn hands...\n");
     #pragma omp parallel for schedule(dynamic)
     for (hand_index_t i = 0; i < lut_size; i++) {
-        if (omp_get_thread_num() == 0 && i % 100000 == 0) {
+        if (omp_get_thread_num() == 0 && i % 1000000 == 0) {
             printf("  ... Progress: %.2f%% (%" PRIhand_index "/%" PRIhand_index ") [Using %d threads]\n",
                    (double)i * 100 / lut_size, i, lut_size, omp_get_num_threads());
         }
@@ -441,33 +518,106 @@ void generate_turn_multidimensional_lut_isomorphic(FILE* fp) {
         uint8_t cards_u8[6];
         int cards_int[6];
 
-        // Get the canonical hand for this index
         hand_unindex(&turn_indexer, 2, i, cards_u8);
 
         for(int j=0; j<6; j++) {
             cards_int[j] = cards_u8[j];
         }
 
-        // Calculate the multi-dimensional evaluation for this canonical hand
         holdem_evaluation_t eval;
         eval.equity_vs_all = calculate_one_street_strength(cards_int, 6);
         eval.equity_vs_pair_sets = calculate_equity_vs_range(cards_int, 6, is_pair_sets_on_board);
         turn_lut[i] = eval;
     }
 
-    printf("All turn evaluations calculated. Writing LUT to file...\n");
-    fprintf(fp, "\n#define ISOMORPHIC_LUTS_DEFINED\n");
-    fprintf(fp, "\n/* Isomorphic Turn LUT (%" PRIhand_index " entries) */\n", lut_size);
-    fprintf(fp, "const holdem_evaluation_t turn_multidimensional_lut[%" PRIhand_index "] = {\n", lut_size);
+    printf("All turn evaluations calculated. Compressing LUT...\n");
+
+    // --- Compression Step ---
+    uint32_t* turn_mapping = malloc(lut_size * sizeof(uint32_t));
+    holdem_evaluation_t* unique_evals = malloc(lut_size * sizeof(holdem_evaluation_t)); // Over-allocate
+    uint32_t unique_count = 0;
+
+    #define HASH_SIZE_TURN 8388608 // 2^23
+    typedef struct NodeTurn {
+        uint32_t eval_idx;
+        struct NodeTurn* next;
+    } NodeTurn;
+    NodeTurn** hash_table = calloc(HASH_SIZE_TURN, sizeof(NodeTurn*));
 
     for (hand_index_t i = 0; i < lut_size; i++) {
-        fprintf(fp, "    {%d,%d}", turn_lut[i].equity_vs_all, turn_lut[i].equity_vs_pair_sets);
-        if (i < lut_size - 1) fprintf(fp, ",");
-        if (i % 8 == 7) fprintf(fp, "\n");
+        holdem_evaluation_t current_eval = turn_lut[i];
+        uint32_t hash = (current_eval.equity_vs_all * 31 + current_eval.equity_vs_pair_sets) % HASH_SIZE_TURN;
+
+        bool found = false;
+        NodeTurn* current_node = hash_table[hash];
+        while (current_node) {
+            uint32_t eval_idx = current_node->eval_idx;
+            if (unique_evals[eval_idx].equity_vs_all == current_eval.equity_vs_all &&
+                unique_evals[eval_idx].equity_vs_pair_sets == current_eval.equity_vs_pair_sets) {
+                turn_mapping[i] = eval_idx;
+                found = true;
+                break;
+            }
+            current_node = current_node->next;
+        }
+
+        if (!found) {
+            uint32_t new_unique_idx = unique_count++;
+            unique_evals[new_unique_idx] = current_eval;
+            turn_mapping[i] = new_unique_idx;
+
+            NodeTurn* new_node = malloc(sizeof(NodeTurn));
+            new_node->eval_idx = new_unique_idx;
+            new_node->next = hash_table[hash];
+            hash_table[hash] = new_node;
+        }
+    }
+
+    for(int i=0; i < HASH_SIZE_TURN; ++i) {
+        NodeTurn* current_node = hash_table[i];
+        while(current_node) {
+            NodeTurn* temp = current_node;
+            current_node = current_node->next;
+            free(temp);
+        }
+    }
+    free(hash_table);
+
+    printf("Turn LUT compression: %" PRIhand_index " total -> %u unique (%.2f%% reduction in entries)\n",
+           lut_size, unique_count, 100.0 * (lut_size - unique_count) / lut_size);
+    printf("Data size reduction: from %.2f MB to %.2f MB (Mapping) + %.2f MB (Unique Evals)\n",
+           (double)(lut_size * sizeof(holdem_evaluation_t)) / (1024*1024),
+           (double)(lut_size * sizeof(uint16_t)) / (1024*1024), // Assuming we can use uint16_t
+           (double)(unique_count * sizeof(holdem_evaluation_t)) / (1024*1024));
+
+
+    // --- Writing to file ---
+    fprintf(fp, "\n#define ISOMORPHIC_LUTS_DEFINED\n");
+    fprintf(fp, "\n/* Compressed Isomorphic Turn LUT (%" PRIhand_index " total, %u unique) */\n", lut_size, unique_count);
+    fprintf(fp, "const holdem_evaluation_t turn_unique_evaluations[%u] = {\n", unique_count);
+    for (uint32_t i = 0; i < unique_count; i++) {
+        fprintf(fp, "    {%u,%u}", unique_evals[i].equity_vs_all, unique_evals[i].equity_vs_pair_sets);
+        if (i < unique_count - 1) fprintf(fp, ",");
+        if ((i + 1) % 8 == 0) fprintf(fp, "\n");
+    }
+    fprintf(fp, "\n};\n\n");
+
+    bool use_uint16_turn = (unique_count <= 65535);
+    if (use_uint16_turn) {
+        fprintf(fp, "const uint16_t turn_mapping[%" PRIhand_index "] = {\n", lut_size);
+    } else {
+        fprintf(fp, "const uint32_t turn_mapping[%" PRIhand_index "] = {\n", lut_size);
+    }
+
+    for (hand_index_t i = 0; i < lut_size; i++) {
+        fprintf(fp, "%u,", turn_mapping[i]);
+        if (i < lut_size - 1 && (i + 1) % 20 == 0) fprintf(fp, "\n");
     }
     fprintf(fp, "\n};\n\n");
 
     free(turn_lut);
+    free(unique_evals);
+    free(turn_mapping);
     hand_indexer_free(&turn_indexer);
     printf("Isomorphic Turn LUT generation completed.\n");
 }

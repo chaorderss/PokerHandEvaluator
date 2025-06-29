@@ -443,7 +443,8 @@ holdem_evaluation_t evaluate_holdem_multidimensional(int* cards, int card_count)
                 cards_u8[i] = (uint8_t)cards[i];
             }
             hand_index_t index = hand_index_last(&flop_indexer, cards_u8);
-            result = flop_multidimensional_lut[index];
+            uint32_t mapping_index = flop_mapping[index];
+            result = flop_unique_evaluations[mapping_index];
         } else {
             // Fallback if indexer failed to initialize
             result = evaluate_holdem_multidimensional_nolut(cards, 5);
@@ -458,13 +459,8 @@ holdem_evaluation_t evaluate_holdem_multidimensional(int* cards, int card_count)
                 cards_u8[i] = (uint8_t)cards[i];
             }
             hand_index_t index = hand_index_last(&turn_indexer, cards_u8);
-
-            // The size of the LUT is known at compile time via the generated header.
-            // We can get it from the indexer too for a runtime check, but it's not strictly necessary.
-            // hand_index_t lut_size = hand_indexer_size(&turn_indexer, 2);
-            // if (index < lut_size) {
-            result = turn_multidimensional_lut[index];
-            // }
+            uint32_t mapping_index = turn_mapping[index];
+            result = turn_unique_evaluations[mapping_index];
 
         } else {
             // Fallback if indexer failed to initialize

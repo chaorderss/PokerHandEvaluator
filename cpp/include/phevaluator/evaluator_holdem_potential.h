@@ -29,17 +29,23 @@ extern const int river_multidimensional_lut[7462];
  * All values are in the range 0-10000 (higher is better).
  */
 typedef struct {
-    int equity_vs_all;           // Overall equity against all possible hands (0-10000)
-    int equity_vs_pair_sets;     // Equity specifically against one-pair, two-pairs, and sets (0-10000)
+    uint16_t equity_vs_all;           // Overall equity against all possible hands (0-10000)
+    uint16_t equity_vs_pair_sets;     // Equity specifically against one-pair, two-pairs, and sets (0-10000)
 } holdem_evaluation_t;
 
 /**
  * @brief Multidimensional evaluation lookup tables.
  * These are generated offline by the `generate_potential_tables` tool.
- * Uses hand_indexer library for accurate isomorphic indexing.
+ * They are now compressed: a large `mapping` table points to a smaller
+ * `unique_evaluations` table.
  */
-extern const holdem_evaluation_t flop_multidimensional_lut[];   // Size determined by hand_indexer
-extern const holdem_evaluation_t turn_multidimensional_lut[];   // Size determined by hand_indexer
+// Flop LUT
+extern const holdem_evaluation_t flop_unique_evaluations[];
+extern const uint32_t flop_mapping[]; // Updated to uint32_t to match compressed file
+
+// Turn LUT
+extern const holdem_evaluation_t turn_unique_evaluations[];
+extern const uint32_t turn_mapping[]; // Updated to uint32_t to match compressed file
 
 // Lookup table size definitions
 #define HOLE_COMBINATIONS 1326      // C(52, 2) = 1326 possible hole card combinations
