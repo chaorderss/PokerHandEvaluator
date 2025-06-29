@@ -118,6 +118,7 @@ holdem_evaluation_t evaluate_holdem_multidimensional_nolut(int* cards, int card_
  * @brief 基于花色同构的精确手牌索引计算
  *
  * 使用组合数学公式生成0-1325范围的唯一索引，考虑公共牌的花色分布
+ * 注意：此函数尚未实现，暂时注释以避免链接错误
  *
  * @param hole1 第一张底牌
  * @param hole2 第二张底牌
@@ -125,7 +126,7 @@ holdem_evaluation_t evaluate_holdem_multidimensional_nolut(int* cards, int card_
  * @param board_count 公共牌数量
  * @return 精确的手牌索引 (0-1325)
  */
-int get_precise_hole_index(int hole1, int hole2, int* community_cards, int board_count);
+// int get_precise_hole_index(int hole1, int hole2, int* community_cards, int board_count);
 
 /**
  * @brief Evaluates a hand's potential and returns a single combined score.
