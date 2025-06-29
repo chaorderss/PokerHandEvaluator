@@ -344,6 +344,76 @@ static void generate_board_from_texture(int texture_index, int* board, int* used
 
 // --- END: LUT Generation Specific Helpers ---
 
+// --- START: Clustering Cache Helpers ---
+
+static clustering_result_t* load_clustering_result(const char* filename) {
+    FILE* fp = fopen(filename, "rb");
+    if (!fp) {
+        return NULL; // File doesn't exist, not an error
+    }
+
+    clustering_result_t header;
+    if (fread(&header.size, sizeof(size_t), 1, fp) != 1) {
+        fclose(fp);
+        return NULL;
+    }
+    if (fread(&header.map_size, sizeof(size_t), 1, fp) != 1) {
+        fclose(fp);
+        return NULL;
+    }
+
+    clustering_result_t* result = malloc(sizeof(clustering_result_t));
+    if (!result) {
+        fclose(fp);
+        return NULL;
+    }
+    *result = header;
+    result->hand_to_cluster_map = malloc(result->map_size * sizeof(size_t));
+    result->data = malloc(result->size * sizeof(clustered_evaluation_t));
+
+    if (!result->hand_to_cluster_map || !result->data) {
+        free(result->hand_to_cluster_map);
+        free(result->data);
+        free(result);
+        fclose(fp);
+        return NULL;
+    }
+
+    if (fread(result->hand_to_cluster_map, sizeof(size_t), result->map_size, fp) != result->map_size) {
+        free(result->hand_to_cluster_map);
+        free(result->data);
+        free(result);
+        fclose(fp);
+        return NULL;
+    }
+
+    // Initialize data array to zero (will be filled during evaluation phase)
+    memset(result->data, 0, result->size * sizeof(clustered_evaluation_t));
+
+    fclose(fp);
+    printf("Successfully loaded clustering result from %s\n", filename);
+    return result;
+}
+
+static void save_clustering_result(const char* filename, const clustering_result_t* result) {
+    FILE* fp = fopen(filename, "wb");
+    if (!fp) {
+        fprintf(stderr, "Warning: Could not open %s for writing.\n", filename);
+        return;
+    }
+
+    // Write header (size and map_size)
+    fwrite(&result->size, sizeof(size_t), 1, fp);
+    fwrite(&result->map_size, sizeof(size_t), 1, fp);
+    // Write map data
+    fwrite(result->hand_to_cluster_map, sizeof(size_t), result->map_size, fp);
+
+    fclose(fp);
+    printf("Successfully saved clustering result to %s\n", filename);
+}
+
+// --- END: Clustering Cache Helpers ---
+
 // --- Main Program and LUT Writing Functions ---
 
 void generate_flop_multidimensional_lut(FILE* fp);
@@ -572,10 +642,19 @@ void generate_river_multidimensional_lut(FILE* fp) {
 void generate_flop_clustered_lut(FILE* fp, size_t target_flop_clusters, size_t turn_clusters_for_flop) {
     printf("Generating clustered flop LUT with %zu clusters...\n", target_flop_clusters);
 
-    clustering_result_t* clustering = generate_flop_clustering(target_flop_clusters, turn_clusters_for_flop);
+    char cache_filename[256];
+    snprintf(cache_filename, sizeof(cache_filename), "flop_clusters_%zu.cache", target_flop_clusters);
+
+    clustering_result_t* clustering = load_clustering_result(cache_filename);
+
     if (!clustering) {
-        fprintf(stderr, "Error: Failed to generate flop clustering\n");
-        return;
+        printf("Cache not found for flop. Generating from scratch...\n");
+        clustering = generate_flop_clustering(target_flop_clusters, turn_clusters_for_flop);
+        if (!clustering) {
+            fprintf(stderr, "Error: Failed to generate flop clustering\n");
+            return;
+        }
+        save_clustering_result(cache_filename, clustering);
     }
 
     printf("Calculating representative evaluations for %zu flop clusters...\n", clustering->size);
@@ -736,10 +815,18 @@ void generate_flop_clustered_lut(FILE* fp, size_t target_flop_clusters, size_t t
 void generate_turn_clustered_lut(FILE* fp, size_t target_clusters) {
     printf("Generating clustered turn LUT with %zu clusters...\n", target_clusters);
 
-    clustering_result_t* clustering = generate_turn_clustering(target_clusters);
+    char cache_filename[256];
+    snprintf(cache_filename, sizeof(cache_filename), "turn_clusters_%zu.cache", target_clusters);
+
+    clustering_result_t* clustering = load_clustering_result(cache_filename);
     if (!clustering) {
-        fprintf(stderr, "Error: Failed to generate turn clustering\n");
-        return;
+        printf("Cache not found for turn. Generating from scratch...\n");
+        clustering = generate_turn_clustering(target_clusters);
+        if (!clustering) {
+            fprintf(stderr, "Error: Failed to generate turn clustering\n");
+            return;
+        }
+        save_clustering_result(cache_filename, clustering);
     }
 
     printf("Calculating representative evaluations for %zu turn clusters...\n", clustering->size);
