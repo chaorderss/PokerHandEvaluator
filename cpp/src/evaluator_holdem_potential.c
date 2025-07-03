@@ -449,8 +449,8 @@ holdem_evaluation_t evaluate_holdem_multidimensional(int* cards, int card_count)
 
     if (card_count < 5) {
         // Preflop: We don't have a LUT for preflop, return a neutral value.
-        result.equity_vs_all = 5000;
-        result.equity_vs_pair_sets = 5000;
+        result.equity_vs_all = 0;
+        result.equity_vs_pair_sets = 0;
     } else if (card_count == 5) {
         // Flop: Use the new isomorphic LUT
         if (flop_indexer_initialized) {
