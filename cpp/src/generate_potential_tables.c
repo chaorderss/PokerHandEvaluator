@@ -11,7 +11,19 @@
 #include <string.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <time.h>
+#include <inttypes.h>
+
+// OpenMP compatibility for macOS M1
+#if defined(_OPENMP) && !defined(NO_OPENMP)
 #include <omp.h>
+#else
+// Dummy OpenMP functions for compatibility
+static inline int omp_get_max_threads() { return 1; }
+static inline int omp_get_num_threads() { return 1; }
+static inline int omp_get_thread_num() { return 0; }
+#endif
+
 #include "../include/phevaluator/phevaluator.h"
 #include "../include/phevaluator/evaluator_holdem_potential.h"
 #include "../../../hand-isomorphism/src/hand_index.h" // Import the hand isomorphism library

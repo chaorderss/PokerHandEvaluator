@@ -120,13 +120,17 @@ if(CLUSTERING_SOURCES)
     set_target_properties(poker_clustering PROPERTIES CXX_STANDARD 17)
     target_compile_options(poker_clustering PRIVATE -O3 -fPIC)
 
-    # Find OpenMP for C++
-    find_package(OpenMP)
-    if(OpenMP_FOUND)
-        message(STATUS "OpenMP found, enabling parallel build for clustering library.")
-        target_link_libraries(poker_clustering PRIVATE OpenMP::OpenMP_CXX)
-        target_compile_options(poker_clustering PRIVATE "-fopenmp")
-    endif()
+    # Find OpenMP for C++ - macOS M1 compatibility
+find_package(OpenMP)
+if(OpenMP_FOUND)
+    message(STATUS "OpenMP found, enabling parallel build for clustering library.")
+    target_link_libraries(poker_clustering PRIVATE OpenMP::OpenMP_CXX)
+    target_compile_options(poker_clustering PRIVATE "-fopenmp")
+else()
+    message(WARNING "OpenMP not found. Building clustering library without OpenMP support.")
+    # Define NO_OPENMP macro for conditional compilation
+    target_compile_definitions(poker_clustering PRIVATE NO_OPENMP)
+endif()
 
     set(CLUSTERING_AVAILABLE TRUE)
 else()
@@ -156,7 +160,11 @@ if(CLUSTERING_AVAILABLE)
 else()
     target_link_libraries(generate_potential_tables PRIVATE handisomorphism -lm)
 endif()
-target_compile_options(generate_potential_tables PRIVATE -fopenmp)
+if(APPLE)
+  target_compile_options(generate_potential_tables PRIVATE)
+else()
+  target_compile_options(generate_potential_tables PRIVATE -fopenmp)
+endif()
 
 # Add OpenMP flags for the generator
 # 暂时禁用OpenMP以避免CMake卡住
@@ -201,7 +209,7 @@ add_library(pheval SHARED
   src/7462.c
   src/evaluator_extended.c
   src/evaluator_holdem_potential.c
-  ${CMAKE_CURRENT_SOURCE_DIR}/src/evaluator_holdem_potential_tables.h  # 暂时注释掉避免CMake卡住
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/evaluator_holdem_potential_tables_bitpacked.h  # 暂时注释掉避免CMake卡住
 )
 # Add dependency on strength LUT generation
 add_dependencies(pheval generate_strength_lut)

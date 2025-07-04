@@ -12,7 +12,19 @@
 #include <random>
 #include <thread>
 #include <cstdio>
+#include <cstdlib>
+// #include <omp.h>
+
+// OpenMP compatibility for macOS M1
+#if defined(_OPENMP) && !defined(NO_OPENMP)
 #include <omp.h>
+#else
+// Dummy OpenMP functions for compatibility
+static inline int omp_get_max_threads() { return 1; }
+static inline int omp_get_num_threads() { return 1; }
+static inline int omp_get_thread_num() { return 0; }
+static inline void omp_set_num_threads(int num_threads) { (void)num_threads; }
+#endif
 
 extern "C" {
 #include "../include/phevaluator/evaluator_holdem_potential.h"
