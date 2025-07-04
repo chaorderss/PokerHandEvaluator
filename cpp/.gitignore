@@ -29,7 +29,6 @@ src/tables_plo6.c
 src/evaluator_holdem_potential_tables_original.h
 src/evaluator_holdem_potential_tables_compressed.h
 src/evaluator_holdem_potential_tables_bitpacked.h
-src/evaluator_holdem_potential_tables.h
 include/phevaluator/evaluator_holdem_potential_tables.h
 include/phevaluator/evaluator_holdem_potential_tables_compressed.h
 include/phevaluator/evaluator_holdem_potential_tables_bitpacked.h

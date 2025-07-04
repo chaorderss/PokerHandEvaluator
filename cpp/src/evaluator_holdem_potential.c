@@ -465,12 +465,6 @@ holdem_evaluation_t evaluate_holdem_multidimensional(int* cards, int card_count)
 #else
             uint32_t mapping_index = flop_mapping[index];
 
-            #ifdef BITPACKED_TABLES_AVAILABLE
-            // Use bit-packed lookup table
-            uint32_t packed_value = flop_unique_evaluations_packed[mapping_index];
-            result.equity_vs_all = UNPACK_EQUITY_VS_ALL(packed_value);
-            result.equity_vs_pair_sets = UNPACK_EQUITY_VS_PAIR_SETS(packed_value);
-            #else
             // Use regular lookup table
             result = flop_unique_evaluations[mapping_index];
 #endif
@@ -493,13 +487,6 @@ holdem_evaluation_t evaluate_holdem_multidimensional(int* cards, int card_count)
             result = unpack_evaluation(turn_unique_evaluations_packed[mapping_index]);
 #else
             uint32_t mapping_index = turn_mapping[index];
-
-            #ifdef BITPACKED_TABLES_AVAILABLE
-            // Use bit-packed lookup table
-            uint32_t packed_value = turn_unique_evaluations_packed[mapping_index];
-            result.equity_vs_all = UNPACK_EQUITY_VS_ALL(packed_value);
-            result.equity_vs_pair_sets = UNPACK_EQUITY_VS_PAIR_SETS(packed_value);
-            #else
             // Use regular lookup table
             result = turn_unique_evaluations[mapping_index];
 #endif
